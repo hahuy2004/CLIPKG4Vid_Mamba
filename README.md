@@ -9,9 +9,15 @@ and one for `LLaVa`, which is used for preprocessing to generate narrations.
 
 ### Setting up the Main CLIPKG4Vid Environment
 ```sh
+# CLIP4Clip
 conda install --yes -c pytorch pytorch=1.13.1 torchvision cudatoolkit=11.6
 pip install opencv-python==4.9.0.80 numpy==1.23.0 ftfy regex tqdm boto3 requests pandas
+# Mamba
+pip install -e causal_conv1d>=1.1.0
+pip install -e mamba-1p1p1
 ```
+Install Causal_conv1d and Mamba_ssm following [Vim](https://github.com/doodleima/vision_mamba).
+
 
 ### Setting up the LLaVa Environment
 
