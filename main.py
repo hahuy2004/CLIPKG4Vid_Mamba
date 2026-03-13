@@ -17,8 +17,10 @@ from modules.optimization import BertAdam
 
 from util import parallel_apply, get_logger
 from dataloaders.data_dataloaders import DATALOADER_DICT
+import datetime
 
-torch.distributed.init_process_group(backend="nccl")
+# torch.distributed.init_process_group(backend="nccl")
+torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(seconds=540000))
 
 global logger
 
@@ -116,7 +118,7 @@ def get_args(description='CLIPKG4Vid on Retrieval Task'):
     parser.add_argument('--linear_patch', type=str, default="2d", choices=["2d", "3d"],
                         help="linear projection of flattened patches.")
     parser.add_argument('--sim_header', type=str, default="meanP",
-                        choices=["meanP", "seqLSTM", "seqTransf", "tightTransf"],
+                        choices=["meanP", "seqLSTM", "seqTransf", "tightTransf", "MUSE"],
                         help="choice a similarity header.")
 
     parser.add_argument("--pretrained_clip_name", default="ViT-B/32", type=str, help="Choose a CLIP version")
@@ -209,17 +211,26 @@ def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, loc
     no_decay_param_tp = [(n, p) for n, p in param_optimizer if any(nd in n for nd in no_decay)]
 
     decay_clip_param_tp = [(n, p) for n, p in decay_param_tp if "clip." in n]
-    decay_noclip_param_tp = [(n, p) for n, p in decay_param_tp if "clip." not in n]
+    # decay_noclip_param_tp = [(n, p) for n, p in decay_param_tp if "clip." not in n]
+    decay_noclip_param_tp_seq = [(n, p) for n, p in decay_param_tp if "clip." not in n and 'mamba' in n] # Learning rate adjustment for Mamba
+    decay_noclip_param_tp_noseq = [(n, p) for n, p in decay_param_tp if "clip." not in n and 'mamba' not in n]
 
     no_decay_clip_param_tp = [(n, p) for n, p in no_decay_param_tp if "clip." in n]
-    no_decay_noclip_param_tp = [(n, p) for n, p in no_decay_param_tp if "clip." not in n]
+    # no_decay_noclip_param_tp = [(n, p) for n, p in no_decay_param_tp if "clip." not in n]
+    no_decay_noclip_param_tp_seq = [(n, p) for n, p in no_decay_param_tp if "clip." not in n and 'mamba' in n] # Learning rate adjustment for Mamba
+    no_decay_noclip_param_tp_noseq = [(n, p) for n, p in no_decay_param_tp if "clip." not in n and 'mamba' not in n]
+
 
     weight_decay = 0.2
     optimizer_grouped_parameters = [
         {'params': [p for n, p in decay_clip_param_tp], 'weight_decay': weight_decay, 'lr': args.lr * coef_lr},
-        {'params': [p for n, p in decay_noclip_param_tp], 'weight_decay': weight_decay},
+        # {'params': [p for n, p in decay_noclip_param_tp], 'weight_decay': weight_decay},
+        {'params': [p for n, p in decay_noclip_param_tp_seq], 'weight_decay': weight_decay, 'lr': args.lr * 10},
+        {'params': [p for n, p in decay_noclip_param_tp_noseq], 'weight_decay': weight_decay},
         {'params': [p for n, p in no_decay_clip_param_tp], 'weight_decay': 0.0, 'lr': args.lr * coef_lr},
-        {'params': [p for n, p in no_decay_noclip_param_tp], 'weight_decay': 0.0}
+        # {'params': [p for n, p in no_decay_noclip_param_tp], 'weight_decay': 0.0}
+        {'params': [p for n, p in no_decay_noclip_param_tp_seq], 'weight_decay': 0.0, 'lr': args.lr * 10},
+        {'params': [p for n, p in no_decay_noclip_param_tp_noseq], 'weight_decay': 0.0}
     ]
 
     scheduler = None
@@ -545,7 +556,11 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
                     batch_t_output_splits.append(devc_batch_list)
                     devc_batch_list = [b.to(devc) for b in batch_word_output_list[s_:e_]]
                     batch_w_output_splits.append(devc_batch_list)
-                    devc_batch_list = [b.to(devc) for b in batch_visual_output_list]
+                    # visual_output can be either Tensor (non-MUSE) or Tuple[Tensor, Tensor] (MUSE)
+                    devc_batch_list = [
+                        tuple(x.to(devc) for x in b) if isinstance(b, tuple) else b.to(devc)
+                        for b in batch_visual_output_list
+                    ]
                     batch_v_output_splits.append(devc_batch_list)
                     devc_batch_list = [b.to(devc) for b in batch_narration_output_list]
                     batch_n_output_splits.append(devc_batch_list)
