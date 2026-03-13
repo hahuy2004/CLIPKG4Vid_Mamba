@@ -20,65 +20,59 @@ from modules.co_attention_transformer_module import Co_attention_block
 
 import math
 from torch import Tensor
-from mamba_ssm import Mamba
-from einops import rearrange
 from functools import partial
 import numpy as np
-from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
 from typing import Tuple, Union, Optional
+
+try:
+    from mamba_ssm import Mamba
+    from einops import rearrange
+    from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
+    MUSE_AVAILABLE = True
+except ImportError:
+    MUSE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 allgather = AllGather.apply
 
-class Mamba_Out(nn.Module):
-    def __init__(
-        self,
-        d_model,
-        d_state=16,
-        d_conv=4,
-        expand=2,
-        dt_rank="auto",
-        conv_bias=True,
-        bias=False,
-        use_fast_path=True,  # Fused kernel options
-        layer_idx=None,
-        device=None,
-        dtype=None,
-        bimamba_type="none",
-        if_devide_out=False,
-        init_layer_scale=None,
-    ):
-        factory_kwargs = {"device": device, "dtype": dtype}
-        super().__init__()
-        self.d_model = d_model
-        self.d_state = d_state
-        self.d_conv = d_conv
-        self.expand = expand
-        self.d_inner = int(self.expand * self.d_model)
-        self.use_fast_path = use_fast_path
-        self.layer_idx = layer_idx
-        self.bimamba_type = bimamba_type
-        self.if_devide_out = if_devide_out
+if MUSE_AVAILABLE:
+    class Mamba_Out(nn.Module):
+        def __init__(
+            self,
+            d_model,
+            d_state=16,
+            d_conv=4,
+            expand=2,
+            dt_rank="auto",
+            conv_bias=True,
+            bias=False,
+            use_fast_path=True,  # Fused kernel options
+            layer_idx=None,
+            device=None,
+            dtype=None,
+            bimamba_type="none",
+            if_devide_out=False,
+            init_layer_scale=None,
+        ):
+            factory_kwargs = {"device": device, "dtype": dtype}
+            super().__init__()
+            self.d_model = d_model
+            self.d_state = d_state
+            self.d_conv = d_conv
+            self.expand = expand
+            self.d_inner = int(self.expand * self.d_model)
+            self.use_fast_path = use_fast_path
+            self.layer_idx = layer_idx
+            self.bimamba_type = bimamba_type
+            self.if_devide_out = if_devide_out
 
-        self.init_layer_scale = init_layer_scale
-        if init_layer_scale is not None:
-            self.gamma = nn.Parameter(init_layer_scale * torch.ones((d_model)), requires_grad=True)
+            self.init_layer_scale = init_layer_scale
+            if init_layer_scale is not None:
+                self.gamma = nn.Parameter(init_layer_scale * torch.ones((d_model)), requires_grad=True)
 
-        self.in_proj = nn.Linear(self.d_model, self.d_inner * 2, bias=bias, **factory_kwargs)
+            self.in_proj = nn.Linear(self.d_model, self.d_inner * 2, bias=bias, **factory_kwargs)
 
-        self.conv1d = nn.Conv1d(
-            in_channels=self.d_inner,
-            out_channels=self.d_inner,
-            bias=conv_bias,
-            kernel_size=d_conv,
-            groups=self.d_inner,
-            padding=d_conv - 1,
-            **factory_kwargs,
-        )
-
-        self.activation = "silu"
-        self.act = nn.SiLU()
-        self.conv1d_b = nn.Conv1d(
+            self.conv1d = nn.Conv1d(
                 in_channels=self.d_inner,
                 out_channels=self.d_inner,
                 bias=conv_bias,
@@ -87,90 +81,106 @@ class Mamba_Out(nn.Module):
                 padding=d_conv - 1,
                 **factory_kwargs,
             )
-        self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
 
-    def forward(self, hidden_states, inference_params=None):
-        """
-        hidden_states: (B, L, D)
-        Returns: same shape as hidden_states
-        """
-        batch, seqlen, dim = hidden_states.shape
-        # We do matmul and transpose BLH -> HBL at the same time
-        xz = rearrange(
-            self.in_proj.weight @ rearrange(hidden_states, "b l d -> d (b l)"),
-            "d (b l) -> b d l",
-            l=seqlen,
-        )
-        if self.in_proj.bias is not None:
-            xz = xz + rearrange(self.in_proj.bias.to(dtype=xz.dtype), "d -> d 1")
-        
-        if self.use_fast_path and inference_params is None:  # Doesn't support outputting the states
-            x, z = xz.chunk(2, dim=1)
-            out = self.conv1d(x)
-            x, z = xz.flip([-1]).chunk(2, dim=1)
-            out_b = self.conv1d_b(x)
-            if not self.if_devide_out:
-                out = F.linear(rearrange(out + out_b.flip([-1]), "b d l -> b l d"), self.out_proj.weight, self.out_proj.bias)
-              
-        if self.init_layer_scale is not None:
-            out = out * self.gamma    
-        return out
+            self.activation = "silu"
+            self.act = nn.SiLU()
+            self.conv1d_b = nn.Conv1d(
+                    in_channels=self.d_inner,
+                    out_channels=self.d_inner,
+                    bias=conv_bias,
+                    kernel_size=d_conv,
+                    groups=self.d_inner,
+                    padding=d_conv - 1,
+                    **factory_kwargs,
+                )
+            self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
 
-class MultiheadAttention_flash(nn.MultiheadAttention):
-    def forward(self, query: Tensor, key: Tensor, value: Tensor, key_padding_mask: Optional[Tensor] = None,
-                need_weights: bool = True, attn_mask: Optional[Tensor] = None):
+        def forward(self, hidden_states, inference_params=None):
+            """
+            hidden_states: (B, L, D)
+            Returns: same shape as hidden_states
+            """
+            batch, seqlen, dim = hidden_states.shape
+            # We do matmul and transpose BLH -> HBL at the same time
+            xz = rearrange(
+                self.in_proj.weight @ rearrange(hidden_states, "b l d -> d (b l)"),
+                "d (b l) -> b d l",
+                l=seqlen,
+            )
+            if self.in_proj.bias is not None:
+                xz = xz + rearrange(self.in_proj.bias.to(dtype=xz.dtype), "d -> d 1")
+            
+            if self.use_fast_path and inference_params is None:  # Doesn't support outputting the states
+                x, z = xz.chunk(2, dim=1)
+                out = self.conv1d(x)
+                x, z = xz.flip([-1]).chunk(2, dim=1)
+                out_b = self.conv1d_b(x)
+                if not self.if_devide_out:
+                    out = F.linear(rearrange(out + out_b.flip([-1]), "b d l -> b l d"), self.out_proj.weight, self.out_proj.bias)
+                
+            if self.init_layer_scale is not None:
+                out = out * self.gamma    
+            return out
 
-        return flash_attn_func(
-                q=query, k=key, v=value, dropout_p=0.0, softmax_scale=None, causal=False,
-                window_size=(-1, -1), alibi_slopes=None, deterministic=False)
+    class MultiheadAttention_flash(nn.MultiheadAttention):
+        def forward(self, query: Tensor, key: Tensor, value: Tensor, key_padding_mask: Optional[Tensor] = None,
+                    need_weights: bool = True, attn_mask: Optional[Tensor] = None):
 
+            return flash_attn_func(
+                    q=query, k=key, v=value, dropout_p=0.0, softmax_scale=None, causal=False,
+                    window_size=(-1, -1), alibi_slopes=None, deterministic=False)
 
-class LayerNorm_conv(nn.LayerNorm):
-    """Subclass torch's LayerNorm to handle fp16."""
-    def __init__(self, normalized_shape):
-        super().__init__(normalized_shape=normalized_shape)
+    class LayerNorm_conv(nn.LayerNorm):
+        """Subclass torch's LayerNorm to handle fp16."""
+        def __init__(self, normalized_shape):
+            super().__init__(normalized_shape=normalized_shape)
 
-    def forward(self, x: torch.Tensor):
-        x = x.permute(0,2,3,1)
-        orig_type = x.dtype
-        ret = super().forward(x.type(torch.float32))# add ssf
-        return ret.type(orig_type).permute(0,3,1,2)
+        def forward(self, x: torch.Tensor):
+            x = x.permute(0,2,3,1)
+            orig_type = x.dtype
+            ret = super().forward(x.type(torch.float32))# add ssf
+            return ret.type(orig_type).permute(0,3,1,2)
 
-class Mamba_head(nn.Module):
-    def __init__(self, embed_dim, layer_num=0.1):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.mamba = Mamba(self.embed_dim, d_conv=4, bimamba_type='v2', use_fast_path=True, expand=1)
-        # self.mamba_out = Mamba_Out(self.embed_dim, d_conv=1, bimamba_type='v2', use_fast_path=True, expand=1)
-        # self.transformer = nn.MultiheadAttention(self.embed_dim, self.embed_dim // 64)
-        # self.flash_attn = MultiheadAttention_flash(self.embed_dim, self.embed_dim // 64)
-        self.layer_norm1 = nn.LayerNorm(self.embed_dim)
-        # self.layer_norm1 = RMSNorm(hidden_size=self.embed_dim)
+    class Mamba_head(nn.Module):
+        def __init__(self, embed_dim, layer_num=0.1):
+            super().__init__()
+            self.embed_dim = embed_dim
+            self.mamba = Mamba(self.embed_dim, d_conv=4, bimamba_type='v2', use_fast_path=True, expand=1)
+            # self.mamba_out = Mamba_Out(self.embed_dim, d_conv=1, bimamba_type='v2', use_fast_path=True, expand=1)
+            # self.transformer = nn.MultiheadAttention(self.embed_dim, self.embed_dim // 64)
+            # self.flash_attn = MultiheadAttention_flash(self.embed_dim, self.embed_dim // 64)
+            self.layer_norm1 = nn.LayerNorm(self.embed_dim)
+            # self.layer_norm1 = RMSNorm(hidden_size=self.embed_dim)
 
-        self.proj_drop = nn.Dropout(layer_num)
-        self.temporal_fc = nn.Linear(self.embed_dim, self.embed_dim)
-        nn.init.constant_(self.temporal_fc.weight, 0.)
-        nn.init.constant_(self.temporal_fc.bias, 0.)
+            self.proj_drop = nn.Dropout(layer_num)
+            self.temporal_fc = nn.Linear(self.embed_dim, self.embed_dim)
+            nn.init.constant_(self.temporal_fc.weight, 0.)
+            nn.init.constant_(self.temporal_fc.bias, 0.)
 
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask=None,
-        causal_attention_mask=None,
-    ):
-        residual = hidden_states
-        hidden_states = self.layer_norm1(hidden_states)
-        # hidden_states = self.transformer((hidden_states, None))[0] [L,B,D]
-        hidden_states = self.mamba(hidden_states)
-        # hidden_states = self.mamba_out(hidden_states)
-        # hidden_states = self.flash_attn(hidden_states, hidden_states, hidden_states, need_weights=False, attn_mask=None)
-        res_temporal = self.proj_drop(hidden_states.contiguous())
-        
-        res_temporal = self.temporal_fc(res_temporal)
-        hidden_states = residual + res_temporal
-        outputs = hidden_states
+        def forward(
+            self,
+            hidden_states: torch.Tensor,
+            attention_mask=None,
+            causal_attention_mask=None,
+        ):
+            residual = hidden_states
+            hidden_states = self.layer_norm1(hidden_states)
+            # hidden_states = self.transformer((hidden_states, None))[0] [L,B,D]
+            hidden_states = self.mamba(hidden_states)
+            # hidden_states = self.mamba_out(hidden_states)
+            # hidden_states = self.flash_attn(hidden_states, hidden_states, hidden_states, need_weights=False, attn_mask=None)
+            res_temporal = self.proj_drop(hidden_states.contiguous())
+            
+            res_temporal = self.temporal_fc(res_temporal)
+            hidden_states = residual + res_temporal
+            outputs = hidden_states
 
-        return outputs
+            return outputs
+else:
+    Mamba_Out = None
+    MultiheadAttention_flash = None
+    LayerNorm_conv = None
+    Mamba_head = None
 
 class CLIPKG4VidPreTrainedModel(PreTrainedModel, nn.Module):
     """ An abstract class to handle weights initialization and
@@ -455,6 +465,9 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
             # ------------------------------------------------------
 
         if self.sim_header == "MUSE":
+            if not MUSE_AVAILABLE:
+                raise ImportError("Run sim_header='MUSE' but not install required dependencies."
+                                  "Requirement install: pip install einops mamba-ssm[causal-conv1d] flash-attn --no-build-isolation")
             scale_factors = [0.5, 1.0, 2.0] # feature scales used
             dim = transformer_width
             mamba_stage_list = []

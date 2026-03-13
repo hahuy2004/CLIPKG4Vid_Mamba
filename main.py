@@ -211,27 +211,34 @@ def prep_optimizer(args, model, num_train_optimization_steps, device, n_gpu, loc
     no_decay_param_tp = [(n, p) for n, p in param_optimizer if any(nd in n for nd in no_decay)]
 
     decay_clip_param_tp = [(n, p) for n, p in decay_param_tp if "clip." in n]
-    # decay_noclip_param_tp = [(n, p) for n, p in decay_param_tp if "clip." not in n]
-    decay_noclip_param_tp_seq = [(n, p) for n, p in decay_param_tp if "clip." not in n and 'mamba' in n] # Learning rate adjustment for Mamba
-    decay_noclip_param_tp_noseq = [(n, p) for n, p in decay_param_tp if "clip." not in n and 'mamba' not in n]
+    decay_noclip_param_tp = [(n, p) for n, p in decay_param_tp if "clip." not in n]
 
     no_decay_clip_param_tp = [(n, p) for n, p in no_decay_param_tp if "clip." in n]
-    # no_decay_noclip_param_tp = [(n, p) for n, p in no_decay_param_tp if "clip." not in n]
-    no_decay_noclip_param_tp_seq = [(n, p) for n, p in no_decay_param_tp if "clip." not in n and 'mamba' in n] # Learning rate adjustment for Mamba
-    no_decay_noclip_param_tp_noseq = [(n, p) for n, p in no_decay_param_tp if "clip." not in n and 'mamba' not in n]
+    no_decay_noclip_param_tp = [(n, p) for n, p in no_decay_param_tp if "clip." not in n]
 
 
     weight_decay = 0.2
-    optimizer_grouped_parameters = [
-        {'params': [p for n, p in decay_clip_param_tp], 'weight_decay': weight_decay, 'lr': args.lr * coef_lr},
-        # {'params': [p for n, p in decay_noclip_param_tp], 'weight_decay': weight_decay},
-        {'params': [p for n, p in decay_noclip_param_tp_seq], 'weight_decay': weight_decay, 'lr': args.lr * 10},
-        {'params': [p for n, p in decay_noclip_param_tp_noseq], 'weight_decay': weight_decay},
-        {'params': [p for n, p in no_decay_clip_param_tp], 'weight_decay': 0.0, 'lr': args.lr * coef_lr},
-        # {'params': [p for n, p in no_decay_noclip_param_tp], 'weight_decay': 0.0}
-        {'params': [p for n, p in no_decay_noclip_param_tp_seq], 'weight_decay': 0.0, 'lr': args.lr * 10},
-        {'params': [p for n, p in no_decay_noclip_param_tp_noseq], 'weight_decay': 0.0}
-    ]
+    if args.sim_header == "MUSE":
+        decay_noclip_param_tp_seq = [(n, p) for n, p in decay_param_tp if "clip." not in n and 'mamba' in n] 
+        decay_noclip_param_tp_noseq = [(n, p) for n, p in decay_param_tp if "clip." not in n and 'mamba' not in n]
+        no_decay_noclip_param_tp_seq = [(n, p) for n, p in no_decay_param_tp if "clip." not in n and 'mamba' in n] 
+        no_decay_noclip_param_tp_noseq = [(n, p) for n, p in no_decay_param_tp if "clip." not in n and 'mamba' not in n]
+
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in decay_clip_param_tp], 'weight_decay': weight_decay, 'lr': args.lr * coef_lr},
+            {'params': [p for n, p in decay_noclip_param_tp_seq], 'weight_decay': weight_decay, 'lr': args.lr * 10},
+            {'params': [p for n, p in decay_noclip_param_tp_noseq], 'weight_decay': weight_decay},
+            {'params': [p for n, p in no_decay_clip_param_tp], 'weight_decay': 0.0, 'lr': args.lr * coef_lr},
+            {'params': [p for n, p in no_decay_noclip_param_tp_seq], 'weight_decay': 0.0, 'lr': args.lr * 10},
+            {'params': [p for n, p in no_decay_noclip_param_tp_noseq], 'weight_decay': 0.0}
+        ]
+    else:
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in decay_clip_param_tp], 'weight_decay': weight_decay, 'lr': args.lr * coef_lr},
+            {'params': [p for n, p in decay_noclip_param_tp], 'weight_decay': weight_decay},
+            {'params': [p for n, p in no_decay_clip_param_tp], 'weight_decay': 0.0, 'lr': args.lr * coef_lr},
+            {'params': [p for n, p in no_decay_noclip_param_tp], 'weight_decay': 0.0}
+        ]
 
     scheduler = None
     optimizer = BertAdam(optimizer_grouped_parameters, lr=args.lr, warmup=args.warmup_proportion,
@@ -557,10 +564,12 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
                     devc_batch_list = [b.to(devc) for b in batch_word_output_list[s_:e_]]
                     batch_w_output_splits.append(devc_batch_list)
                     # visual_output can be either Tensor (non-MUSE) or Tuple[Tensor, Tensor] (MUSE)
-                    devc_batch_list = [
-                        tuple(x.to(devc) for x in b) if isinstance(b, tuple) else b.to(devc)
-                        for b in batch_visual_output_list
-                    ]
+                    if args.sim_header == "MUSE":
+                        # Tuple[Tensor, Tensor] (MUSE)
+                        devc_batch_list = [tuple(x.to(devc) for x in b) for b in batch_visual_output_list]
+                    else:
+                        # Tensor (non-MUSE)
+                        devc_batch_list = [b.to(devc) for b in batch_visual_output_list]
                     batch_v_output_splits.append(devc_batch_list)
                     devc_batch_list = [b.to(devc) for b in batch_narration_output_list]
                     batch_n_output_splits.append(devc_batch_list)
