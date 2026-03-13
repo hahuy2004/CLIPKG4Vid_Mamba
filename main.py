@@ -347,7 +347,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                 start_time = time.time()
 
             # Step-based evaluation
-            if ((global_step % (log_step * 20) == 0) or global_step == 1) and args.datatype == "msrvtt":
+            if ((global_step % (log_step * 15) == 0) or global_step == 1) and args.datatype == "msrvtt":
                 if test_dataloader is not None:
                     if n_gpu > 1:
                         torch.distributed.barrier()
