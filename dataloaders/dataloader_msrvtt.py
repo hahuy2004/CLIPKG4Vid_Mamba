@@ -29,6 +29,8 @@ class MSRVTT_DataLoader(Dataset):
             frame_order=0,
             slice_framepos=0,
             video_data_type='frames',
+            aug_json_path=None,
+            fqs_k=2,
     ):
         self.data = pd.read_csv(csv_path)
         # ----------- New: Load narration data -----------
@@ -73,6 +75,15 @@ class MSRVTT_DataLoader(Dataset):
             self.narration_dict[video_file] = narration
         # -------------------------------------------
 
+        # ----------- New: aug_data & fqs_k -----------
+        self.fqs_k = fqs_k
+        self.aug_data = None
+        if aug_json_path is not None and os.path.exists(aug_json_path):
+            print(f"DataLoader loading augmented queries from {aug_json_path}...")
+            with open(aug_json_path, 'r') as f:
+                self.aug_data = json.load(f)
+        # -------------------------------------------
+
     # ------ Same CLIP4Clip --------
     def __len__(self):
         return len(self.data)
@@ -111,6 +122,65 @@ class MSRVTT_DataLoader(Dataset):
             pairs_segment[i] = np.array(segment_ids)
 
         return pairs_text, pairs_mask, pairs_segment, choice_video_ids
+
+    # ------ New: get text for original + augmented queries --------
+    def _get_text_with_aug(self, video_id, sentence):
+        """Tokenize the original sentence plus self.fqs_k augmented queries.
+        Returns shape (1 + fqs_k, max_words) for text/mask/segment.
+        """
+        choice_video_ids = [video_id]
+        total_queries = 1 + self.fqs_k
+
+        pairs_text = np.zeros((total_queries, self.max_words), dtype=np.long)
+        pairs_mask = np.zeros((total_queries, self.max_words), dtype=np.long)
+        pairs_segment = np.zeros((total_queries, self.max_words), dtype=np.long)
+
+        def _tokenize_sentence(sent):
+            words = self.tokenizer.tokenize(sent)
+            words = [self.SPECIAL_TOKEN["CLS_TOKEN"]] + words
+            total_length_with_CLS = self.max_words - 1
+            if len(words) > total_length_with_CLS:
+                words = words[:total_length_with_CLS]
+            words = words + [self.SPECIAL_TOKEN["SEP_TOKEN"]]
+            
+            input_ids = self.tokenizer.convert_tokens_to_ids(words)
+            input_mask = [1] * len(input_ids)
+            segment_ids = [0] * len(input_ids)
+            while len(input_ids) < self.max_words:
+                input_ids.append(0)
+                input_mask.append(0)
+                segment_ids.append(0)
+            return input_ids, input_mask, segment_ids
+
+        # Row 0: original query
+        input_ids, input_mask, segment_ids = _tokenize_sentence(sentence)
+        pairs_text[0] = np.array(input_ids)
+        pairs_mask[0] = np.array(input_mask)
+        pairs_segment[0] = np.array(segment_ids)
+
+        # Rows 1..fqs_k: augmented queries
+        aug_sentences = []
+        if self.aug_data is not None and video_id in self.aug_data:
+            video_aug = self.aug_data[video_id]
+            # Find the cap whose "original" matches this sentence
+            for cap_key, cap_data in video_aug.items():
+                if cap_data.get("original", "") == sentence:
+                    aug_sentences = cap_data.get("augment", [])
+                    break
+            # Fallback: use the first cap's augmented queries
+            if not aug_sentences and video_aug:
+                first_cap = list(video_aug.values())[0]
+                aug_sentences = first_cap.get("augment", [])
+
+        for i in range(self.fqs_k):
+            aug_sent = aug_sentences[i] if i < len(aug_sentences) else sentence
+            input_ids, input_mask, segment_ids = _tokenize_sentence(aug_sent)
+            pairs_text[1 + i] = np.array(input_ids)
+            pairs_mask[1 + i] = np.array(input_mask)
+            pairs_segment[1 + i] = np.array(segment_ids)
+
+        return pairs_text, pairs_mask, pairs_segment, choice_video_ids
+    # ----------------------------------------------
 
     def _get_rawvideo(self, choice_video_ids):
         video_mask = np.zeros((len(choice_video_ids), self.max_frames), dtype=np.long)
@@ -240,11 +310,18 @@ class MSRVTT_DataLoader(Dataset):
     # ----------------------------------------------
 
     # ------ Same CLIP4Clip, but now can choose between rawvideo and rawframes --------
+    # ------ And supports augmented eval when aug_data is loaded ------------------
     def __getitem__(self, idx):
         video_id = self.data['video_id'].values[idx]
         sentence = self.data['sentence'].values[idx]
 
-        pairs_text, pairs_mask, pairs_segment, choice_video_ids = self._get_text(video_id, sentence)
+        if self.aug_data is not None:
+            # Augmented eval mode: original query + fqs_k augmented queries
+            pairs_text, pairs_mask, pairs_segment, choice_video_ids = self._get_text_with_aug(video_id, sentence)
+        else:
+            # Baseline mode: original query only
+            pairs_text, pairs_mask, pairs_segment, choice_video_ids = self._get_text(video_id, sentence)
+
         narration, caption_word_mask = self._get_narration(choice_video_ids)
         # Choose between raw video or raw frames based on video_data_type
         if self.video_data_type == 'video':

@@ -49,6 +49,8 @@ def dataloader_msrvtt_test(args, tokenizer, subset="test"):
         frame_order=args.eval_frame_order,
         slice_framepos=args.slice_framepos,
         video_data_type=args.video_data_type,
+        aug_json_path=args.aug_json_path,
+        fqs_k=args.fqs_k,
     )
     dataloader_msrvtt = DataLoader(
         msrvtt_testset,

@@ -17,6 +17,7 @@ from modules.optimization import BertAdam
 
 from util import parallel_apply, get_logger
 from dataloaders.data_dataloaders import DATALOADER_DICT
+from preprocess.query_generator.aggregator import Aggregator
 import datetime
 
 # torch.distributed.init_process_group(backend="nccl")
@@ -123,6 +124,16 @@ def get_args(description='CLIPKG4Vid on Retrieval Task'):
 
     parser.add_argument("--pretrained_clip_name", default="ViT-B/32", type=str, help="Choose a CLIP version")
 
+    # ==========================================
+    # ENRICHED EVALUATION ARGUMENTS (ICLR 2025)
+    # ==========================================
+    parser.add_argument('--aug_json_path', type=str, default=None, 
+                        help='Đường dẫn chính xác đến file JSON chứa FQS queries. Nếu None, chạy baseline.')
+    parser.add_argument('--aggregation_strategy', type=int, default=1, choices=[1, 2, 3, 4],
+                        help='Aggregation strategy: 1=Weighted RRF, 2=Average Similarity, 3=True Majority Voting, 4=Max Similarity')
+    parser.add_argument('--fqs_k', type=int, default=2,
+                        help='Số lượng augmented queries mỗi video (k). Dùng để khai báo kích thước tensor (tổng k+1).')
+    
     args = parser.parse_args()
 
     if args.sim_header == "tightTransf":
@@ -613,15 +624,236 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
 
     return R1
 
-def get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_):
+def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
+    """
+    Enriched Evaluation (FQS): evaluates using original + augmented queries.
 
-    TV_mean = np.mean(TV_sim_matrix)
-    TV_std = np.std(TV_sim_matrix)
-    TV_sim_matrix = (TV_sim_matrix - TV_mean) / TV_std
+    Flow:
+      1. For each batch, text tensors (batch, k+1, max_words) are flattened to
+         (batch*(k+1), max_words) inside the model via .view(-1, last_dim).
+      2. Video / narration features are extracted normally (batch, ...).
+      3. The raw similarity matrix has shape (N*(k+1), M).
+      4. Reshape to (N, k+1, M) → transpose to (k+1, N, M).
+      5. Aggregator reduces to (N, M) via WeightedRRF / Average / MajorityVoting.
+      6. Pass aggregated matrix to get_score() for metric computation.
+    """
+    if hasattr(model, 'module'):
+        model = model.module.to(device)
+    else:
+        model = model.to(device)
 
-    TC_mean = np.mean(TN_sim_matrix)
-    TC_std = np.std(TN_sim_matrix)
-    TN_sim_matrix = (TN_sim_matrix - TC_mean) / TC_std
+    multi_sentence_ = False
+    cut_off_points_, sentence_num_, video_num_ = [], -1, -1
+    if hasattr(test_dataloader.dataset, 'multi_sentence_per_video') \
+            and test_dataloader.dataset.multi_sentence_per_video:
+        multi_sentence_ = True
+        cut_off_points_ = test_dataloader.dataset.cut_off_points
+        sentence_num_ = test_dataloader.dataset.sentence_num
+        video_num_ = test_dataloader.dataset.video_num
+        cut_off_points_ = [itm - 1 for itm in cut_off_points_]
+
+    if multi_sentence_:
+        logger.warning("[FQS] Eval under the multi-sentence per video clip setting.")
+        logger.warning("[FQS] sentence num: {}, video num: {}".format(sentence_num_, video_num_))
+
+    k_plus_1 = 1 + args.fqs_k  # total query variants per sample (original + augmented)
+
+    model.eval()
+    with torch.no_grad():
+        batch_list_t = []
+        batch_list_v = []
+        batch_list_n = []
+        batch_sequence_output_list, batch_word_output_list = [], []
+        batch_visual_output_list, batch_narration_output_list = [], []
+        total_video_num = 0
+
+        logger.info("[FQS] [start] extract features")
+        total_batches = len(test_dataloader)
+        logger.info("[FQS] Total batches: {}, k+1={}".format(total_batches, k_plus_1))
+
+        for bid, batch in enumerate(test_dataloader):
+            batch = tuple(t.to(device) for t in batch)
+            input_ids, input_mask, segment_ids, video, video_mask, narration, narration_word_mask, narration_mask = batch
+
+            # Keep all text tensors aligned in 2D to avoid shape mismatch later in similarity computation.
+            if len(input_ids.shape) == 3:
+                _b_text, _k_dim, seq_len = input_ids.shape
+                input_ids = input_ids.contiguous().view(-1, seq_len)
+                input_mask = input_mask.contiguous().view(-1, seq_len)
+                segment_ids = segment_ids.contiguous().view(-1, seq_len)
+
+            # --- Text encoding ---
+            # input_ids shape: (batch, k+1, max_words) when aug is active.
+            # model.get_sequence_words_output internally calls
+            # input_ids.view(-1, input_ids.shape[-1]), so it correctly flattens
+            # (batch, k+1, max_words) -> (batch*(k+1), max_words) before encoding.
+            # Resulting sequence_output: (batch*(k+1), 1, D)
+            #           word_output:     (batch*(k+1), max_words, D)
+            if multi_sentence_:
+                b, *_t = video.shape
+                sequence_output, word_output = model.get_sequence_words_output(
+                    input_ids, segment_ids, input_mask)
+                batch_sequence_output_list.append(sequence_output)
+                batch_word_output_list.append(word_output)
+                batch_list_t.append((input_mask, segment_ids,))
+
+                s_, e_ = total_video_num, total_video_num + b
+                filter_inds = [itm - s_ for itm in cut_off_points_ if itm >= s_ and itm < e_]
+
+                if len(filter_inds) > 0:
+                    video, video_mask = video[filter_inds, ...], video_mask[filter_inds, ...]
+                    narration, narration_mask = narration[filter_inds, ...], narration_mask[filter_inds, ...]
+                    visual_output = model.get_visual_output(video, video_mask)
+                    narration_output = model.get_narration_output(narration, narration_word_mask, narration_mask)
+                    batch_visual_output_list.append(visual_output)
+                    batch_list_v.append((video_mask,))
+                    batch_narration_output_list.append(narration_output)
+                    batch_list_n.append((narration_mask,))
+
+                total_video_num += b
+            else:
+                sequence_output, word_output = model.get_sequence_words_output(
+                    input_ids, segment_ids, input_mask)
+                batch_sequence_output_list.append(sequence_output)
+                batch_word_output_list.append(word_output)
+                batch_list_t.append((input_mask, segment_ids,))
+
+                visual_output = model.get_visual_output(video, video_mask)
+                narration_output = model.get_narration_output(narration, narration_word_mask, narration_mask)
+                batch_visual_output_list.append(visual_output)
+                batch_list_v.append((video_mask,))
+                batch_narration_output_list.append(narration_output)
+                batch_list_n.append((narration_mask,))
+
+            if (bid + 1) % 10 == 0 or (bid + 1) == total_batches:
+                logger.info("[FQS] Extracting features: {}/{} batches ({:.1f}%)".format(
+                    bid + 1, total_batches, 100.0 * (bid + 1) / total_batches))
+
+        logger.info("[FQS] [finish] extract features")
+        logger.info("[FQS] Cached {} text batches, {} video batches".format(
+            len(batch_list_t), len(batch_list_v)))
+
+        # ------------------------------------------------------------------
+        # 2. Calculate the similarity (reuse _run_on_single_gpu exactly)
+        # ------------------------------------------------------------------
+        logger.info("[FQS] [start] calculate the similarity")
+        if n_gpu > 1:
+            device_ids = list(range(n_gpu))
+            batch_list_t_splits = []
+            batch_list_v_splits = []
+            batch_list_n_splits = []
+            batch_t_output_splits = []
+            batch_w_output_splits = []
+            batch_v_output_splits = []
+            batch_n_output_splits = []
+            batch_len = len(batch_list_t)
+            split_len = (batch_len + n_gpu - 1) // n_gpu
+            for dev_id in device_ids:
+                s_, e_ = dev_id * split_len, (dev_id + 1) * split_len
+                if dev_id == 0:
+                    batch_list_t_splits.append(batch_list_t[s_:e_])
+                    batch_list_v_splits.append(batch_list_v)
+                    batch_list_n_splits.append(batch_list_n)
+                    batch_t_output_splits.append(batch_sequence_output_list[s_:e_])
+                    batch_w_output_splits.append(batch_word_output_list[s_:e_])
+                    batch_v_output_splits.append(batch_visual_output_list)
+                    batch_n_output_splits.append(batch_narration_output_list)
+                else:
+                    devc = torch.device('cuda:{}'.format(str(dev_id)))
+                    devc_batch_list = [tuple(t.to(devc) for t in b) for b in batch_list_t[s_:e_]]
+                    batch_list_t_splits.append(devc_batch_list)
+                    devc_batch_list = [tuple(t.to(devc) for t in b) for b in batch_list_v]
+                    batch_list_v_splits.append(devc_batch_list)
+                    devc_batch_list = [tuple(t.to(devc) for t in b) for b in batch_list_n]
+                    batch_list_n_splits.append(devc_batch_list)
+                    devc_batch_list = [b.to(devc) for b in batch_sequence_output_list[s_:e_]]
+                    batch_t_output_splits.append(devc_batch_list)
+                    devc_batch_list = [b.to(devc) for b in batch_word_output_list[s_:e_]]
+                    batch_w_output_splits.append(devc_batch_list)
+                    if args.sim_header == "MUSE":
+                        devc_batch_list = [tuple(x.to(devc) for x in b) for b in batch_visual_output_list]
+                    else:
+                        devc_batch_list = [b.to(devc) for b in batch_visual_output_list]
+                    batch_v_output_splits.append(devc_batch_list)
+                    devc_batch_list = [b.to(devc) for b in batch_narration_output_list]
+                    batch_n_output_splits.append(devc_batch_list)
+
+            parameters_tuple_list = [
+                (batch_list_t_splits[dev_id], batch_list_v_splits[dev_id], batch_list_n_splits[dev_id],
+                 batch_t_output_splits[dev_id], batch_w_output_splits[dev_id],
+                 batch_v_output_splits[dev_id], batch_n_output_splits[dev_id])
+                for dev_id in device_ids]
+
+            logger.info("[FQS] Running similarity computation on {} GPUs...".format(n_gpu))
+            parallel_outputs = parallel_apply(_run_on_single_gpu, model, parameters_tuple_list, device_ids)
+
+            TV_sim_matrix_coarse, TV_sim_matrix_fine = [], []
+            TN_sim_matrix_coarse, TN_sim_matrix_fine = [], []
+            for idx in range(len(parallel_outputs)):
+                TV_sim_matrix_coarse += parallel_outputs[idx][0]
+                TV_sim_matrix_fine   += parallel_outputs[idx][1]
+                TN_sim_matrix_coarse += parallel_outputs[idx][2]
+                TN_sim_matrix_fine   += parallel_outputs[idx][3]
+            TV_sim_matrix_coarse = np.concatenate(tuple(TV_sim_matrix_coarse), axis=0)
+            TV_sim_matrix_fine   = np.concatenate(tuple(TV_sim_matrix_fine),   axis=0)
+            TN_sim_matrix_coarse = np.concatenate(tuple(TN_sim_matrix_coarse), axis=0)
+            TN_sim_matrix_fine   = np.concatenate(tuple(TN_sim_matrix_fine),   axis=0)
+
+            TV_sim_matrix = (TV_sim_matrix_coarse + TV_sim_matrix_fine) / 2
+            TN_sim_matrix = (TN_sim_matrix_coarse + TN_sim_matrix_fine) / 2
+        else:
+            TV_sim_matrix_coarse, TV_sim_matrix_fine, TN_sim_matrix_coarse, TN_sim_matrix_fine = \
+                _run_on_single_gpu(model, batch_list_t, batch_list_v, batch_list_n,
+                                   batch_sequence_output_list, batch_word_output_list,
+                                   batch_visual_output_list, batch_narration_output_list)
+            TV_sim_matrix_coarse = np.concatenate(tuple(TV_sim_matrix_coarse), axis=0)
+            TN_sim_matrix_coarse = np.concatenate(tuple(TN_sim_matrix_coarse), axis=0)
+            TV_sim_matrix_fine   = np.concatenate(tuple(TV_sim_matrix_fine),   axis=0)
+            TN_sim_matrix_fine   = np.concatenate(tuple(TN_sim_matrix_fine),   axis=0)
+
+            TV_sim_matrix = (TV_sim_matrix_coarse + TV_sim_matrix_fine) / 2
+            TN_sim_matrix = (TN_sim_matrix_coarse + TN_sim_matrix_fine) / 2
+
+        logger.info("[FQS] [finish] calculate the similarity")
+        logger.info("[FQS] Raw similarity matrix shape: ({}, {})".format(
+            TV_sim_matrix.shape[0], TV_sim_matrix.shape[1]))
+
+        # ------------------------------------------------------------------
+        # 3. Reshape & Aggregate: (N*k_plus_1, M) → (k+1, N, M) → (N, M)
+        # ------------------------------------------------------------------
+        total_text_queries, n_videos = TV_sim_matrix.shape
+        n_unique = total_text_queries // k_plus_1
+
+        # (N*(k+1), M) → (N, k+1, M) → (k+1, N, M)
+        TV_stacked = TV_sim_matrix.reshape(n_unique, k_plus_1, n_videos).transpose(1, 0, 2)
+        TN_stacked = TN_sim_matrix.reshape(n_unique, k_plus_1, n_videos).transpose(1, 0, 2)
+
+        logger.info("[FQS] Aggregating {} query variants with strategy: {} "
+                    "(1=Weighted RRF, 2=Average, 3=Majority Voting, 4=Max Similarity)".format(
+                        k_plus_1, args.aggregation_strategy))
+        aggregator = Aggregator(strategy=args.aggregation_strategy)
+        TV_sim_agg = aggregator.aggregate(TV_stacked)  # (N, M)
+        TN_sim_agg = aggregator.aggregate(TN_stacked)  # (N, M)
+
+        logger.info("[FQS] Aggregated similarity matrix shape: ({}, {})".format(
+            TV_sim_agg.shape[0], TV_sim_agg.shape[1]))
+
+    # Skip z-score normalization when rank/vote-based aggregators are used,
+    # because their score scales are intentionally not raw logits.
+    skip_normalization = True if args.aggregation_strategy in [1, 3] else False
+    R1 = get_score(TV_sim_agg, TN_sim_agg, multi_sentence_, cut_off_points_, skip_norm=skip_normalization)
+    return R1
+
+def get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_, skip_norm=False):
+
+    if not skip_norm:
+        TV_mean = np.mean(TV_sim_matrix)
+        TV_std = np.std(TV_sim_matrix)
+        TV_sim_matrix = (TV_sim_matrix - TV_mean) / TV_std
+
+        TC_mean = np.mean(TN_sim_matrix)
+        TC_std = np.std(TN_sim_matrix)
+        TN_sim_matrix = (TN_sim_matrix - TC_mean) / TC_std
 
     T2V_sim_matrix = V2T_sim_matrix = TV_sim_matrix + TN_sim_matrix
 
@@ -794,7 +1026,13 @@ def main():
 
     elif args.do_eval:
         if args.local_rank == 0:
-            eval_epoch(args, model, test_dataloader, device, n_gpu)
+            # Điều hướng tự động dựa trên tham số aug_json_path
+            if args.aug_json_path is not None:
+                logger.info("Starting Enriched Evaluation (FQS)...")
+                eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu)
+            else:
+                logger.info("Starting Baseline Evaluation...")
+                eval_epoch(args, model, test_dataloader, device, n_gpu)
 
 if __name__ == "__main__":
     main()
