@@ -121,6 +121,10 @@ def get_args(description='CLIPKG4Vid on Retrieval Task'):
     parser.add_argument('--sim_header', type=str, default="meanP",
                         choices=["meanP", "seqLSTM", "seqTransf", "tightTransf", "MUSE"],
                         help="choice a similarity header.")
+    # --- New: add co-attention block between visual and narration features
+    parser.add_argument('--co_attention_block', action='store_true',
+                        help='Enable co-attention block between visual and narration features.')
+    # ------------------------------------------
 
     parser.add_argument("--pretrained_clip_name", default="ViT-B/32", type=str, help="Choose a CLIP version")
 
@@ -358,12 +362,18 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                 start_time = time.time()
 
             # Step-based evaluation
-            if ((global_step % (log_step * 15) == 0) or global_step == 1) and args.datatype == "msrvtt":
+            should_step_eval = False
+            if args.datatype == "msrvtt":
+                should_step_eval = ((global_step % 150 == 0) or global_step == 1)
+            elif args.datatype == "didemo":
+                should_step_eval = ((global_step % 50 == 0) or global_step == 1)
+                
+            if should_step_eval:
                 if test_dataloader is not None:
                     if n_gpu > 1:
                         torch.distributed.barrier()
                     if local_rank == 0:
-                        logger.info("[Step Eval] Evaluating at global_step %d...", global_step)
+                        logger.info("[Step Eval][%s] Evaluating at global_step %d...", args.datatype, global_step)
                         R1 = eval_epoch(args, model, test_dataloader, device, n_gpu)
                         logger.info("[Step Eval] R1: %.4f | Best so far: %.4f", R1, best_score)
                         if R1 > best_score:

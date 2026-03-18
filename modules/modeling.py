@@ -303,6 +303,8 @@ class CLIPKG4VidPreTrainedModel(PreTrainedModel, nn.Module):
                         continue
                     if key.find("transformer.resblocks") == 0:
                         num_layer = int(key.split(".")[2])
+
+                        # cut from beginning
                         if num_layer < task_config.cross_num_hidden_layers:
                             state_dict["cross."+key] = val.clone()
                             continue
@@ -320,6 +322,7 @@ class CLIPKG4VidPreTrainedModel(PreTrainedModel, nn.Module):
                         continue
                     if model.sim_header == "seqTransf" and key.find("transformer.resblocks") == 0:
                         num_layer = int(key.split(".")[2])
+                        # cut from beginning
                         if num_layer < task_config.cross_num_hidden_layers:
                             state_dict[key.replace("transformer.", "transformerCaption.")] = val.clone()
                             continue
@@ -420,7 +423,12 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
 
         # ---------- New: Co-Attention Transformer for tightTransf ------------
         # Based on Cap4Video
-        self.co_connetion_transformer_model_block = nn.Sequential(*[Co_attention_block(hidden_size=embed_dim, num_attention_heads=transformer_heads, dropout_rate=0.1) for i in range(1)])
+        # Mục đích: Tạo một mô-đun transformer để thực hiện co-attention giữa video và text, giúp tăng cường khả năng tương tác giữa hai loại dữ liệu này. 
+        # Điều này đặc biệt hữu ích trong trường hợp tightTransf, nơi mà sự tương tác chặt chẽ giữa video và text là cần thiết để đạt được hiệu suất tốt nhất.
+        if getattr(self.task_config, "co_attention_block", False):
+            self.co_connetion_transformer_model_block = nn.Sequential(*[Co_attention_block(hidden_size=embed_dim, num_attention_heads=transformer_heads, dropout_rate=0.1) for i in range(1)])
+        else:
+            self.co_connetion_transformer_model_block = None
         # ---------------------------------------------------------------------
 
         for key in ["input_resolution", "context_length", "vocab_size"]:
@@ -543,10 +551,10 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
         # ---------------------------------------------------------------------------------
 
         self.loss_fct = CrossEn()
-
         self.apply(self.init_weights)
 
     # ------ Function for [Phase 1]: Entry Point & Feature Extraction ----------
+    # Note in image: Frame encoder, Text Encoder, Narration Encoder
     # Output: [B, 1, D] - CLS token embedding
     def get_sequence_output(self, input_ids, token_type_ids, attention_mask, shaped=False):
         if shaped is False:
@@ -685,8 +693,12 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
     
     # ------ End phase 1 ----------------
     
-    # --------- Function for [Phase 2]: Query-Video-Narration Matching (Co-Attention + Weighted Token-Video Interaction + Multi-granularity Similarity + Loss Computation) ----------
+    # --------- Function for [Phase 2]: Multi-granularity Matching & Loss Computation (Co-Attention + Weighted Token-Video Interaction + Multi-granularity Similarity + Loss Computation) ----------
     # --- Function for sub-phase [2.2]
+    # Note in image: Module Temporal Block (agg_video_feat, agg_narration_feat)
+    
+    # --- Based on Cap4Video
+    # --- Agg video features with different sim_header types (meanP, seqLSTM, seqTransf, MUSE)
     def agg_video_feat(self, visual_output, video_mask, sim_header="meanP", visual_hidden=None):
         visual_output = visual_output.contiguous()
         if sim_header == "meanP":
@@ -763,6 +775,7 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
         
         return visual_output
     
+    # --- Based on Cap4Video
     def agg_narration_feat(self, narration_output, narrations_batch_mask, sim_header="meanP"):
         narration_output = narration_output.contiguous()
         if sim_header == "meanP":
@@ -800,8 +813,10 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
             
         return narration_output
     
-    # --- Function for sub-phase [2.4]
-    # Based on Cap4Video (https://github.com/whwu95/Cap4Video)  
+    # --- Function for sub-phase [2.4] - [Section 3.4] - Query-Aware Adaptive Filtering
+    # Note in image: Module Query-Aware Adaptive Filtering
+
+    # Based on Cap4Video (https://github.com/whwu95/Cap4Video)
     def wti_interaction(self, word_output, word_mask, visual_output, temperature=1):
         B_t, N_t, _ = word_output.shape
         B_v, N_v, _ = visual_output.shape
@@ -813,6 +828,7 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
 
         return text_weight_expanded
     
+    # Note in image: Sub-module softmax in Module Query-Aware Adaptive Filtering
     def get_softmax_weights(self, sequence_output, narration_output, existing_mask, temperature):
         # Normalize sequence and narration outputs
         narration_output_norm = F.normalize(narration_output, p=2, dim=-1)
@@ -846,8 +862,7 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
 
         return weights
     
-    # ---------- New: Query-Aware Adaptive Filtering ---------------
-    # [Section 3.4] - Query-Aware Adaptive Filtering
+    # Note in image: Sub-module Filtering & softmax in Module Query-Aware Adaptive Filtering
     # Chỉ giữ lại top-p% frames/narrations có probability cao nhất
     # Loại bỏ noise, tập trung vào relevant content
     def apply_nucleus_filtering(self, weights, p):
@@ -875,15 +890,16 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
         normalized_filtered_weights = filtered_weights / filtered_weights_sum
 
         return normalized_filtered_weights
-    # --------------------------------------------------------------
 
-    # ------- Nẻw: Query-Video-Narration Matching ------------
+    # Note in image: Adjust weights and mask after filtering and softmax
+    # If a weight is 0, set the corresponding mask to 0 to exclude it from further computations
     def adjust_weights_and_mask(self, weights, existing_mask):
         weights_masked = weights * existing_mask
         updated_existing_mask = existing_mask.clone()
         updated_existing_mask[weights == 0] = 0
         return weights_masked, updated_existing_mask
     
+    # Note in image: Implement Module Query-Aware Adaptive Filtering to get weights and adjusted masks for words, video frames, and narration tokens 
     def get_weights_and_mask(self, sequence_output, word_output, visual_output, narration_output, word_mask, video_mask, narration_mask):
         temperature = self.task_config.temperature
         nucleus_P = self.task_config.nucleus_P
@@ -907,6 +923,8 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
         return word_weights, vis_weights, nar_weights, adjusted_word_mask, adjusted_vis_mask, adjusted_nar_mask
     
     # --- Function for sub-phase [2.5]
+    # Note in image: Sub-module Multi-granularity Matching (Multi-granularity Similarity Computation)
+
     # Same CLIP4Clip
     def _get_cross_output(self, sequence_output, visual_output, attention_mask, video_mask):
 
@@ -931,7 +949,9 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
         video_out = torch.sum(visual_output_masked, dim=1) / video_mask_un_sum
         return video_out
 
-    # [Section 3.5] - coarse-grained matching
+    # [Section 3.5] - Coarse-grained matching / global matching
+    # --- Based on Cap4Video: 
+    # Xem ý nghĩa tổng thể của cả câu tìm kiếm có khớp với nội dung chính của toàn bộ video hay không
     def _loose_coarse_similarity(self, sequence_output, visual_output, word_mask, video_mask, visual_weights):
         device = sequence_output.device
 
@@ -957,8 +977,9 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
 
         return retrieve_logits
     
-    # Based on Cap4Video (https://github.com/whwu95/Cap4Video)
-    # [Section 3.5] - fine-grained matching
+    # [Section 3.5] - Fine-grained matching / local matching
+    # --- Based on Cap4Video (https://github.com/whwu95/Cap4Video)
+    # Tính độ tương đồng giữa từng từ đơn lẻ (word embeddings) trong câu với từng khung hình (frame embeddings) của video.
     def _loose_fine_similarity(self, word_output, visual_output, word_mask, video_mask, word_weights, visual_weights):
         word_output, visual_output = word_output.contiguous(), visual_output.contiguous()
         word_output = word_output / word_output.norm(dim=-1, keepdim=True)
@@ -996,10 +1017,13 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
             visual_output, visual_hidden_patches = visual_output  # [B,T,D], [B,T*L,D]
 
         # ----- Phase [2.1]: Co-Attention Fusion (visual CLS ↔ narration) -----
-        for co_layer in self.co_connetion_transformer_model_block:
-            visual_output, narration_output, co_attention_probs = co_layer(visual_output, cross_video_mask, narration_output, cross_narration_mask)
+        # Note in image: Module Frame-Level Co-attention Block
+        if getattr(self.task_config, "co_attention_block", False) and self.co_connetion_transformer_model_block is not None:
+            for co_layer in self.co_connetion_transformer_model_block:
+                visual_output, narration_output, co_attention_probs = co_layer(visual_output, cross_video_mask, narration_output, cross_narration_mask)
 
         # ----- Phase [2.2]: Temporal Aggregation (seqLSTM/seqTransformer/MUSE) -----
+        # Note in image: Module Temporal Block (For visual and narration features)
         visual_output = self.agg_video_feat(visual_output, video_mask, self.sim_header, visual_hidden=visual_hidden_patches)
         narration_output = self.agg_narration_feat(narration_output, narration_mask, self.sim_header)
 
@@ -1015,10 +1039,16 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
             torch.distributed.barrier()
 
         # ----- Phase [2.4] Adaptive Weighting & Filtering (WTI + Nucleus Filtering) -----
+        # Note in image: Module Query-Aware Adaptive Filtering 
+        # to get weights and adjusted masks for words, video frames, and narration tokens
         word_weights, visual_weights, narration_weights, word_mask, video_mask, narration_mask = self.get_weights_and_mask(sequence_output, 
                                     word_output, visual_output, narration_output, attention_mask, video_mask, narration_mask)
         
         # ----- Phase [2.5] Multi-granularity Similarity Computation (Coarse-grained Matching + Fine-grained Matching) -----
+        # Note in image: Sub-module Multi-granularity Matching (Multi-granularity Similarity Computation)
+        # Compute both coarse-grained similarity (between sequence CLS and pooled visual/narration features) 
+        # and fine-grained similarity (between word embeddings and frame/narration token embeddings), 
+        # incorporating the adaptive weights and masks.
         retrieve_logits_T2V_coarse = self._loose_coarse_similarity(sequence_output, visual_output, word_mask, video_mask, visual_weights)
         retrieve_logits_T2N_coarse = self._loose_coarse_similarity(sequence_output, narration_output, word_mask, narration_mask, narration_weights)
         retrieve_logits_T2V_fine = self._loose_fine_similarity(word_output, visual_output, word_mask, video_mask, word_weights, visual_weights)
@@ -1028,6 +1058,7 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
     # -------------------------------------------------------------
 
     # --- Function for sub-phase [3]: NCE Loss Computation (L_NCE)
+    # Note in image: Sub-module NCE Loss (L_NCE)
     def cal_nce_loss(self, sim_matrix):
         logit_scale = self.clip.logit_scale.exp()
         sim_matrix = logit_scale * sim_matrix
@@ -1037,6 +1068,7 @@ class CLIPKG4Vid(CLIPKG4VidPreTrainedModel):
         return sim_loss 
     
     # --- Function for sub-phase [4]: Cross-View Hard Negative Loss (L_CVH) - [Section 3.6.1] -------------
+    # Note in image: Sub-module Cross-View Hard Negative Loss (L_CVH)
     # Calculate the hard negative hinge loss based on the similarity matrix and hard negative indices
     # [Section 3.6.1] - Cross-View Hard Negative Loss (L_CVH)
     def get_std_hard_negative_indices(self, sim_matrix):

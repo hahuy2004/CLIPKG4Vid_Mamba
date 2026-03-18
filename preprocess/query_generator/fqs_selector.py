@@ -92,23 +92,16 @@ def compute_distance_matrix(query_embeddings):
     return distance
 
 
-def farthest_query_selection(query_embeddings, k=2, return_indices=True):
+def farthest_query_selection(query_embeddings, k=2, threshold=None, return_indices=True):
     """
-    Farthest Query Selection (FQS) algorithm.
-    Selects k most diverse queries from enriched set using farthest point sampling.
-    
-    Algorithm:
-    1. Initialize with original query (index 0)
-    2. Iteratively select the query that is farthest from all selected queries
-    3. Return k selected queries + original = k+1 total
-    
+    Farthest Query Selection (FQS) algorithm with optional similarity threshold.
+
     Args:
-        query_embeddings: torch.Tensor or np.ndarray of shape (n_queries, embed_dim)
-                         First embedding should be the original query
-        k: Number of enriched queries to select (default: 2)
-           Total selected = k + 1 (including original)
+        query_embeddings: (n_queries, embed_dim), first embedding is original query
+        k: Number of enriched queries to select (total selected = k+1)
+        threshold: Minimum cosine similarity with original query (index 0)
         return_indices: If True, return indices; else return embeddings
-        
+
     Returns:
         If return_indices=True: list of selected indices [0, idx1, idx2, ...]
         If return_indices=False: selected embeddings array
@@ -117,40 +110,48 @@ def farthest_query_selection(query_embeddings, k=2, return_indices=True):
         embeddings_np = query_embeddings.cpu().numpy()
     else:
         embeddings_np = query_embeddings.copy()
-    
+
     n_queries = embeddings_np.shape[0]
-    
-    # Must have at least k+1 queries (1 original + k enriched)
     if n_queries < k + 1:
         raise ValueError(f"Need at least {k+1} queries, but got {n_queries}")
-    
-    # Compute distance matrix
+
+    # Compute distance matrix and derive cosine similarity matrix.
     distance_matrix = compute_distance_matrix(embeddings_np)
-    
+    similarity_matrix = 1.0 - distance_matrix
+
     # Initialize with original query (index 0)
     selected_indices = [0]
     remaining_indices = list(range(1, n_queries))
-    
+
     # Iteratively select k more queries
     for _ in range(k):
         max_min_distance = -1
         farthest_idx = -1
-        
-        # For each remaining query, find minimum distance to selected set
-        for idx in remaining_indices:
-            # Distance from this query to all selected queries
+
+        # Keep only candidates that pass similarity threshold with original query.
+        valid_candidates = remaining_indices
+        if threshold is not None:
+            valid_candidates = [
+                idx for idx in remaining_indices if similarity_matrix[0, idx] >= threshold
+            ]
+
+        # If no candidate passes threshold, re-use original query (index 0).
+        if not valid_candidates:
+            selected_indices.append(0)
+            continue
+
+        # Farthest point sampling on valid candidates only.
+        for idx in valid_candidates:
             distances_to_selected = [distance_matrix[idx, s_idx] for s_idx in selected_indices]
             min_distance = min(distances_to_selected)
-            
-            # Select the query with maximum minimum distance (farthest point)
+
             if min_distance > max_min_distance:
                 max_min_distance = min_distance
                 farthest_idx = idx
-        
-        # Add farthest query to selected set
+
         selected_indices.append(farthest_idx)
         remaining_indices.remove(farthest_idx)
-    
+
     if return_indices:
         return selected_indices
     else:
@@ -247,7 +248,7 @@ def group_by_video(df):
     return dict(grouped)
 
 
-def apply_fqs_per_video(video_data, k, model, device):
+def apply_fqs_per_video(video_data, k, model, device, threshold=None):
     """
     Apply FQS algorithm to select k+1 queries for a single video.
     
@@ -286,7 +287,9 @@ def apply_fqs_per_video(video_data, k, model, device):
     embeddings = encode_texts(all_texts, model, device)
     
     # Apply FQS
-    selected_indices = farthest_query_selection(embeddings, k=k, return_indices=True)
+    selected_indices = farthest_query_selection(
+        embeddings, k=k, threshold=threshold, return_indices=True
+    )
     
     # Return selected captions
     selected_captions = [all_captions[idx] for idx in selected_indices]
@@ -305,6 +308,8 @@ def main():
                        help="Number of enriched captions to select per video (default: 2)")
     parser.add_argument("--output_path", type=str, default=None,
                        help="Path to output FQS CSV file")
+    parser.add_argument("--threshold", "-s", type=float, default=None,
+                       help="Minimum similarity threshold 's' (e.g., 0.5). Default is None (Vanilla FQS)")
     
     args = parser.parse_args()
     
@@ -337,6 +342,8 @@ def main():
     print(f"Input:  {args.input_path}")
     print(f"Output: {args.output_path}")
     print(f"k:      {args.k} (total {args.k + 1} queries per video)")
+    threshold_str = args.threshold if args.threshold is not None else "None (Vanilla FQS)"
+    print(f"Threshold (s): {threshold_str}")
     print("=" * 70)
     
     # Load CLIP model
@@ -357,7 +364,9 @@ def main():
     
     for video_id in tqdm(sorted(video_groups.keys()), desc="Processing videos"):
         video_data = video_groups[video_id]
-        selected = apply_fqs_per_video(video_data, args.k, model, device)
+        selected = apply_fqs_per_video(
+            video_data, args.k, model, device, threshold=args.threshold
+        )
         selected_results.extend(selected)
     
     # Create output DataFrame
