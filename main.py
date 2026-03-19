@@ -308,7 +308,12 @@ def load_model(epoch, args, n_gpu, device, model_file=None):
         model = None
     return model
 
-def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, scheduler, global_step, local_rank=0, test_dataloader=None, best_score=0.00001):
+def should_save_best_score(r1, r5, best_r1, best_r5):
+    # Save when R1 improves, or when R1 ties and R5 is not worse.
+    return (r1 > best_r1) or (np.isclose(r1, best_r1) and r5 >= best_r5)
+
+def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, scheduler, global_step, local_rank=0,
+                test_dataloader=None, best_score=0.00001, best_score_r5=0.00001):
     global logger
     torch.cuda.empty_cache()
     model.train()
@@ -374,12 +379,15 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                         torch.distributed.barrier()
                     if local_rank == 0:
                         logger.info("[Step Eval][%s] Evaluating at global_step %d...", args.datatype, global_step)
-                        R1 = eval_epoch(args, model, test_dataloader, device, n_gpu)
-                        logger.info("[Step Eval] R1: %.4f | Best so far: %.4f", R1, best_score)
-                        if R1 > best_score:
+                        R1, R5 = eval_epoch(args, model, test_dataloader, device, n_gpu)
+                        logger.info("[Step Eval] R1: %.4f, R5: %.4f | Best so far -> R1: %.4f, R5: %.4f",
+                                    R1, R5, best_score, best_score_r5)
+                        if should_save_best_score(R1, R5, best_score, best_score_r5):
                             best_score = R1
+                            best_score_r5 = R5
                             save_best_model(args, model)
-                            logger.info("[Step Eval] New best! R1: %.4f, weights saved to best_result.bin", R1)
+                            logger.info("[Step Eval] New best! R1: %.4f, R5: %.4f, weights saved to best_result.bin",
+                                        R1, R5)
                     if n_gpu > 1:
                         torch.distributed.barrier()
                     model.train()
@@ -394,7 +402,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
     actual_steps = min(step + 1, len(train_dataloader)) if args.max_steps <= 0 else min(step + 1, args.max_steps)
     # total_loss = total_loss / len(train_dataloader)
     total_loss = total_loss / actual_steps
-    return total_loss, global_step, best_score
+    return total_loss, global_step, best_score, best_score_r5
 
 # New: Using 4 separate similarity matrices to calculate the metrics, 
 # which is more efficient than calculating the metrics for each pair of sentences and videos.
@@ -630,9 +638,9 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
     logger.info("[finish] calculate the similarity")
     logger.info("Similarity matrix shape: ({}, {})".format(TV_sim_matrix.shape[0], TV_sim_matrix.shape[1]))
     
-    R1 = get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_)
+    R1, R5 = get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_)
 
-    return R1
+    return R1, R5
 
 def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
     """
@@ -851,8 +859,8 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
     # Skip z-score normalization when rank/vote-based aggregators are used,
     # because their score scales are intentionally not raw logits.
     skip_normalization = True if args.aggregation_strategy in [1, 3] else False
-    R1 = get_score(TV_sim_agg, TN_sim_agg, multi_sentence_, cut_off_points_, skip_norm=skip_normalization)
-    return R1
+    R1, R5 = get_score(TV_sim_agg, TN_sim_agg, multi_sentence_, cut_off_points_, skip_norm=skip_normalization)
+    return R1, R5
 
 def get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_, skip_norm=False):
 
@@ -902,8 +910,9 @@ def get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_, sk
                 format(vt_metrics['R1'], vt_metrics['R5'], vt_metrics['R10'], vt_metrics['MR'], vt_metrics['MeanR']))
 
     R1 = tv_metrics['R1']
+    R5 = tv_metrics['R5']
 
-    return R1
+    return R1, R5
 
 def main():
     global logger
@@ -994,6 +1003,7 @@ def main():
             logger.info("  Num steps = %d", num_train_optimization_steps * args.gradient_accumulation_steps)
 
         best_score = 0.00001
+        best_score_r5 = 0.00001
         best_output_model_file = "None"
         ## ##############################################################
         # resume optimizer state besides loss to continue train
@@ -1008,9 +1018,10 @@ def main():
         global_step = 0
         for epoch in range(resumed_epoch, args.epochs):
             train_sampler.set_epoch(epoch)
-            tr_loss, global_step, best_score = train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer,
-                                                           scheduler, global_step, local_rank=args.local_rank,
-                                                           test_dataloader=test_dataloader, best_score=best_score)
+            tr_loss, global_step, best_score, best_score_r5 = train_epoch(
+                epoch, args, model, train_dataloader, device, n_gpu, optimizer,
+                scheduler, global_step, local_rank=args.local_rank,
+                test_dataloader=test_dataloader, best_score=best_score, best_score_r5=best_score_r5)
 
             if args.local_rank == 0:
                 logger.info("Epoch %d/%s Finished, Train Loss: %f", epoch + 1, args.epochs, tr_loss)
@@ -1021,13 +1032,16 @@ def main():
                 # logger.info("Eval on val dataset")
                 # R1 = eval_epoch(args, model, val_dataloader, device, n_gpu)
 
-                R1 = eval_epoch(args, model, test_dataloader, device, n_gpu)
-                if best_score <= R1:
+                R1, R5 = eval_epoch(args, model, test_dataloader, device, n_gpu)
+                if should_save_best_score(R1, R5, best_score, best_score_r5):
                     best_score = R1
+                    best_score_r5 = R5
                     best_output_model_file = output_model_file
                     save_best_model(args, model)
-                    logger.info("New best score at end of epoch: %.4f, weights saved to best_result.bin", best_score)
-                logger.info("The best model is: {}, the R1 is: {:.4f}".format(best_output_model_file, best_score))
+                    logger.info("New best score at end of epoch: R1=%.4f, R5=%.4f, weights saved to best_result.bin",
+                                best_score, best_score_r5)
+                logger.info("The best model is: {}, best R1: {:.4f}, best R5: {:.4f}".format(
+                    best_output_model_file, best_score, best_score_r5))
 
         ## Uncomment if want to test on the best checkpoint
         # if args.local_rank == 0:
