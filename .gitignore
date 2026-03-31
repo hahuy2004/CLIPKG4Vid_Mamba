@@ -44,3 +44,10 @@
 /datasets/DiDeMo/didemo_data.zip
 /datasets/Vatex/vatex_data.zip
 /datasets/Vatex/vatex_data_raw.zip
+
+docs/PROPOSED_METHOD_FROM_CODE.md
+/KG/error
+/KG/benchmarks
+/KG/test_kg_builder.py
+/KG/analyze_kg.py
+/KG/Note_run_extract_KG.txt
