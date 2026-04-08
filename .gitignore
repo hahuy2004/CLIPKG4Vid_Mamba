@@ -51,3 +51,5 @@ docs/PROPOSED_METHOD_FROM_CODE.md
 /KG/test_kg_builder.py
 /KG/analyze_kg.py
 /KG/Note_run_extract_KG.txt
+
+datasets/MSRVTT/msrvtt_data_before.zip
