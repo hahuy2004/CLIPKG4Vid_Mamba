@@ -1,12 +1,15 @@
 """
 Query Selection Algorithms
-Phase 2: Select k most diverse (FQS) or similar (NQS) queries from enriched set
+Phase 2: Select k most diverse (FQS), similar (NQS), or random queries from enriched set
 
 Usage FQS:
     python fqs_selector.py --k 2 --input_path datasets/MSRVTT/MSRVTT_JSFUSION_test_enriched.csv
 
 Usage NQS:
-    python fqs_selector.py --k 2 --nqs --input_path datasets/MSRVTT/MSRVTT_JSFUSION_test_enriched_nqs.csv
+    python fqs_selector.py --k 2 --nqs --input_path datasets/MSRVTT/MSRVTT_JSFUSION_test_enriched.csv
+
+Usage Random:
+    python fqs_selector.py --k 2 --random --seed 42 --input_path datasets/MSRVTT/MSRVTT_JSFUSION_test_enriched.csv
 """
 
 import numpy as np
@@ -14,6 +17,7 @@ import torch
 import pandas as pd
 import argparse
 import os
+import random
 from tqdm import tqdm
 from collections import defaultdict
 
@@ -57,24 +61,17 @@ def compute_distance_matrix(query_embeddings):
     if isinstance(query_embeddings, torch.Tensor):
         query_embeddings = query_embeddings.cpu().numpy()
     
-    # Normalize embeddings (already normalized from CLIP, but ensure)
     norms = np.linalg.norm(query_embeddings, axis=1, keepdims=True)
     normalized = query_embeddings / (norms + 1e-8)
     
-    # Compute cosine similarity
     similarity = np.dot(normalized, normalized.T)
-    
-    # Convert to distance (1 - cosine similarity)
     distance = 1 - similarity
     
     return distance, similarity
 
 
 def farthest_query_selection(query_embeddings, k=2, threshold=None, return_indices=True):
-    """
-    Farthest Query Selection (FQS)
-    Maximizes the minimum distance between selected queries.
-    """
+    """Farthest Query Selection (FQS): Maximizes the minimum distance."""
     if isinstance(query_embeddings, torch.Tensor):
         embeddings_np = query_embeddings.cpu().numpy()
     else:
@@ -85,7 +82,6 @@ def farthest_query_selection(query_embeddings, k=2, threshold=None, return_indic
         raise ValueError(f"Need at least {k+1} queries, but got {n_queries}")
 
     distance_matrix, similarity_matrix = compute_distance_matrix(embeddings_np)
-
     selected_indices = [0]
     remaining_indices = list(range(1, n_queries))
 
@@ -98,7 +94,6 @@ def farthest_query_selection(query_embeddings, k=2, threshold=None, return_indic
             selected_indices.append(0)
             continue
 
-        # FQS Logic: Maximize the minimum distance
         max_min_distance = -1.0
         farthest_idx = -1
 
@@ -117,10 +112,7 @@ def farthest_query_selection(query_embeddings, k=2, threshold=None, return_indic
 
 
 def nearest_query_sampling(query_embeddings, k=2, threshold=None, return_indices=True):
-    """
-    Nearest Query Sampling (NQS)
-    Minimizes the minimum distance between selected queries.
-    """
+    """Nearest Query Sampling (NQS): Minimizes the minimum distance."""
     if isinstance(query_embeddings, torch.Tensor):
         embeddings_np = query_embeddings.cpu().numpy()
     else:
@@ -131,7 +123,6 @@ def nearest_query_sampling(query_embeddings, k=2, threshold=None, return_indices
         raise ValueError(f"Need at least {k+1} queries, but got {n_queries}")
 
     distance_matrix, similarity_matrix = compute_distance_matrix(embeddings_np)
-
     selected_indices = [0]
     remaining_indices = list(range(1, n_queries))
 
@@ -144,7 +135,6 @@ def nearest_query_sampling(query_embeddings, k=2, threshold=None, return_indices
             selected_indices.append(0)
             continue
 
-        # NQS Logic: Minimize the minimum distance
         min_min_distance = float('inf')
         nearest_idx = -1
 
@@ -188,8 +178,8 @@ def group_by_video(df):
     return dict(grouped)
 
 
-def apply_selection_per_video(video_data, k, model, device, threshold=None, is_nqs=False):
-    """Apply selected algorithm (FQS or NQS) to select queries for a single video."""
+def apply_selection_per_video(video_data, k, model=None, device=None, threshold=None, is_nqs=False, is_random=False):
+    """Apply selected algorithm (Random, FQS, or NQS) to select queries for a single video."""
     original = None
     enriched = []
     
@@ -207,11 +197,16 @@ def apply_selection_per_video(video_data, k, model, device, threshold=None, is_n
         print(f"⚠️  Warning: Video {original['video_id']} has only {len(enriched)} enriched captions, need {k}")
         return [original] + enriched
     
+    # Random Logic - No CLIP needed
+    if is_random:
+        selected_enriched = random.sample(enriched, k)
+        return [original] + selected_enriched
+    
+    # FQS/NQS Logic - Requires CLIP embeddings
     all_captions = [original] + enriched
     all_texts = [item['sentence'] for item in all_captions]
     embeddings = encode_texts(all_texts, model, device)
     
-    # Choose algorithm based on flag
     if is_nqs:
         selected_indices = nearest_query_sampling(embeddings, k=k, threshold=threshold, return_indices=True)
     else:
@@ -223,7 +218,7 @@ def apply_selection_per_video(video_data, k, model, device, threshold=None, is_n
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Apply Query Selection (FQS or NQS) to enriched captions",
+        description="Apply Query Selection (FQS, NQS, or Random) to enriched captions",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -231,9 +226,21 @@ def main():
     parser.add_argument("--k", type=int, default=2, help="Number of enriched captions to select per video")
     parser.add_argument("--output_path", type=str, default=None, help="Path to output CSV file")
     parser.add_argument("--threshold", "-s", type=float, default=None, help="Minimum similarity threshold 's'")
-    parser.add_argument("--nqs", action="store_true", help="Use Nearest Query Sampling (NQS) instead of FQS")
+    
+    # Algorithm flags
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--nqs", action="store_true", help="Use Nearest Query Sampling (NQS)")
+    group.add_argument("--random", action="store_true", help="Use Random Query Sampling")
+    
+    # Random seed
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
     
     args = parser.parse_args()
+    
+    # Set random seed if using random sampling
+    if args.random:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
     
     if args.input_path is None:
         possible_paths = [
@@ -251,10 +258,20 @@ def main():
     
     if args.output_path is None:
         input_dir = os.path.dirname(args.input_path)
-        algo_prefix = "nqs" if args.nqs else "fqs"
+        if args.random:
+            algo_prefix = "random"
+        elif args.nqs:
+            algo_prefix = "nqs"
+        else:
+            algo_prefix = "fqs"
         args.output_path = os.path.join(input_dir, f"MSRVTT_JSFUSION_test_{algo_prefix}_k_{args.k}.csv")
     
-    algo_name = "NEAREST QUERY SAMPLING (NQS)" if args.nqs else "FARTHEST QUERY SELECTION (FQS)"
+    if args.random:
+        algo_name = f"RANDOM QUERY SAMPLING (Seed={args.seed})"
+    elif args.nqs:
+        algo_name = "NEAREST QUERY SAMPLING (NQS)"
+    else:
+        algo_name = "FARTHEST QUERY SELECTION (FQS)"
     
     print("=" * 70)
     print(algo_name)
@@ -262,22 +279,29 @@ def main():
     print(f"Input:  {args.input_path}")
     print(f"Output: {args.output_path}")
     print(f"k:      {args.k} (total {args.k + 1} queries per video)")
-    print(f"Threshold (s): {args.threshold if args.threshold is not None else 'None'}")
+    if not args.random:
+        print(f"Threshold (s): {args.threshold if args.threshold is not None else 'None'}")
     print("=" * 70)
     
-    print("\n🔧 Loading CLIP model...")
-    model, device = load_clip_model()
+    # Only load CLIP if we actually need it (FQS or NQS)
+    model, device = None, None
+    if not args.random:
+        print("\n🔧 Loading CLIP model...")
+        model, device = load_clip_model()
+    else:
+        print("\n⚡ Skipping CLIP loading (Random mode is fast!)...")
     
     df = load_enriched_csv(args.input_path)
     print("\n📊 Grouping captions by video...")
     video_groups = group_by_video(df)
     
-    print(f"\n🎯 Applying Algorithm (k={args.k}, NQS={args.nqs})...")
+    print(f"\n🎯 Applying Algorithm (k={args.k})...")
     selected_results = []
     
     for video_id in tqdm(sorted(video_groups.keys()), desc="Processing videos"):
         selected = apply_selection_per_video(
-            video_groups[video_id], args.k, model, device, threshold=args.threshold, is_nqs=args.nqs
+            video_groups[video_id], args.k, model, device, 
+            threshold=args.threshold, is_nqs=args.nqs, is_random=args.random
         )
         selected_results.extend(selected)
     
@@ -295,7 +319,8 @@ def main():
     output_df.to_csv(args.output_path, index=False)
     
     print("\n" + "=" * 70)
-    print(f"✨ {'NQS' if args.nqs else 'FQS'} COMPLETED!")
+    algo_short = "RANDOM" if args.random else ("NQS" if args.nqs else "FQS")
+    print(f"✨ {algo_short} COMPLETED!")
     print("=" * 70)
     print(f"📊 Processed: {len(video_groups)} videos -> Selected: {len(selected_results)} captions")
     print(f"📄 Output saved to: {args.output_path}")
