@@ -866,7 +866,8 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
     # because their score scales are intentionally not raw logits.
     skip_normalization = True if args.aggregation_strategy in [1, 3] else False
     R1, R5, _ = get_score(TV_sim_agg, TN_sim_agg, multi_sentence_, cut_off_points_, skip_norm=skip_normalization)
-    return R1, R5, raw_2d_sim_matrix
+    agg_2d_sim_matrix = TV_sim_agg + TN_sim_agg
+    return R1, R5, raw_2d_sim_matrix, agg_2d_sim_matrix
 
 def get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_, skip_norm=False):
 
@@ -960,7 +961,7 @@ def save_baseline_retrieval(sim_matrix, dataset, save_path="baseline_preds.json"
         json.dump(results, f, ensure_ascii=False, indent=4)
     logger.info("Finished saving Baseline retrieval JSON.")
 
-def save_augmented_retrieval(raw_sim_matrix, dataset, aug_json_path, save_path="augmented_preds.json", top_k=5):
+def save_augmented_retrieval(raw_sim_matrix, dataset, aug_json_path, save_path="augmented_preds.json", top_k=5, agg_sim_matrix=None):
     """Save retrieval results for original + augmented queries."""
     logger.info("Saving Augmented retrieval JSON to %s...", save_path)
 
@@ -980,6 +981,12 @@ def save_augmented_retrieval(raw_sim_matrix, dataset, aug_json_path, save_path="
     sim_tensor = torch.tensor(raw_sim_matrix)
     k = min(top_k, sim_tensor.shape[1])
     _, topk_indices = torch.topk(sim_tensor, k=k, dim=-1)
+
+    agg_topk_indices = None
+    if agg_sim_matrix is not None:
+        agg_tensor = torch.tensor(agg_sim_matrix)
+        agg_k = min(top_k, agg_tensor.shape[1])
+        _, agg_topk_indices = torch.topk(agg_tensor, k=agg_k, dim=-1)
 
     if hasattr(dataset, 'fqs_k'):
         block_size = int(dataset.fqs_k) + 1
@@ -1005,6 +1012,10 @@ def save_augmented_retrieval(raw_sim_matrix, dataset, aug_json_path, save_path="
         orig_query = all_texts[base_row] if base_row < len(all_texts) else "Query_{}".format(base_row)
         orig_vids = [vid_ids[idx.item()] if idx.item() < len(vid_ids) else "video{}".format(idx.item())
                      for idx in topk_indices[base_row]]
+        agg_vids = []
+        if agg_topk_indices is not None and vid_idx < agg_topk_indices.shape[0]:
+            agg_vids = [vid_ids[idx.item()] if idx.item() < len(vid_ids) else "video{}".format(idx.item())
+                        for idx in agg_topk_indices[vid_idx]]
 
         augment_results = []
         for i in range(block_size - 1):
@@ -1026,6 +1037,7 @@ def save_augmented_retrieval(raw_sim_matrix, dataset, aug_json_path, save_path="
             cap_key: {
                 "original": orig_query,
                 "original_answer": orig_vids,
+                "aggregator_answer": agg_vids,
                 "augment": augment_results
             }
         }
@@ -1177,7 +1189,7 @@ def main():
 
             if args.aug_json_path is not None:
                 logger.info("Starting Enriched Evaluation (FQS)...")
-                R1, R5, raw_sim_matrix = eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu)
+                R1, R5, raw_sim_matrix, agg_sim_matrix = eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu)
                 if args.save_jsons:
                     save_augmented_retrieval(
                         raw_sim_matrix=raw_sim_matrix,
@@ -1185,6 +1197,7 @@ def main():
                         aug_json_path=args.aug_json_path,
                         save_path=save_path,
                         top_k=5,
+                        agg_sim_matrix=agg_sim_matrix,
                     )
             else:
                 logger.info("Starting Baseline Evaluation...")
