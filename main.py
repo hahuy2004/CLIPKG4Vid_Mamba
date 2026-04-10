@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import random
 import os
+import json
 from metrics import compute_metrics, tensor_text_to_video_metrics, tensor_video_to_text_sim
 import time
 import argparse
@@ -137,6 +138,10 @@ def get_args(description='CLIPKG4Vid on Retrieval Task'):
                         help='Aggregation strategy: 1=Weighted RRF, 2=Average Similarity, 3=True Majority Voting, 4=Max Similarity')
     parser.add_argument('--fqs_k', type=int, default=2,
                         help='Số lượng augmented queries mỗi video (k). Dùng để khai báo kích thước tensor (tổng k+1).')
+    parser.add_argument('--save_jsons', action='store_true',
+                        help='Bật cờ này để xuất kết quả dự đoán ra file JSON')
+    parser.add_argument('--save_jsons_path', type=str, default='eval_results.json',
+                        help='Đường dẫn/tên file JSON lưu kết quả (tùy chọn)')
     
     args = parser.parse_args()
 
@@ -379,7 +384,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                         torch.distributed.barrier()
                     if local_rank == 0:
                         logger.info("[Step Eval][%s] Evaluating at global_step %d...", args.datatype, global_step)
-                        R1, R5 = eval_epoch(args, model, test_dataloader, device, n_gpu)
+                        R1, R5, _ = eval_epoch(args, model, test_dataloader, device, n_gpu)
                         logger.info("[Step Eval] R1: %.4f, R5: %.4f | Best so far -> R1: %.4f, R5: %.4f",
                                     R1, R5, best_score, best_score_r5)
                         if should_save_best_score(R1, R5, best_score, best_score_r5):
@@ -638,9 +643,9 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
     logger.info("[finish] calculate the similarity")
     logger.info("Similarity matrix shape: ({}, {})".format(TV_sim_matrix.shape[0], TV_sim_matrix.shape[1]))
     
-    R1, R5 = get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_)
+    R1, R5, raw_2d_sim_matrix = get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_)
 
-    return R1, R5
+    return R1, R5, raw_2d_sim_matrix
 
 def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
     """
@@ -839,6 +844,7 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
         # ------------------------------------------------------------------
         # 3. Reshape & Aggregate: (N*k_plus_1, M) → (k+1, N, M) → (N, M)
         # ------------------------------------------------------------------
+        raw_2d_sim_matrix = TV_sim_matrix + TN_sim_matrix
         total_text_queries, n_videos = TV_sim_matrix.shape
         n_unique = total_text_queries // k_plus_1
 
@@ -859,8 +865,8 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
     # Skip z-score normalization when rank/vote-based aggregators are used,
     # because their score scales are intentionally not raw logits.
     skip_normalization = True if args.aggregation_strategy in [1, 3] else False
-    R1, R5 = get_score(TV_sim_agg, TN_sim_agg, multi_sentence_, cut_off_points_, skip_norm=skip_normalization)
-    return R1, R5
+    R1, R5, _ = get_score(TV_sim_agg, TN_sim_agg, multi_sentence_, cut_off_points_, skip_norm=skip_normalization)
+    return R1, R5, raw_2d_sim_matrix
 
 def get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_, skip_norm=False):
 
@@ -873,7 +879,8 @@ def get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_, sk
         TC_std = np.std(TN_sim_matrix)
         TN_sim_matrix = (TN_sim_matrix - TC_mean) / TC_std
 
-    T2V_sim_matrix = V2T_sim_matrix = TV_sim_matrix + TN_sim_matrix
+    raw_2d_sim_matrix = TV_sim_matrix + TN_sim_matrix
+    T2V_sim_matrix = V2T_sim_matrix = raw_2d_sim_matrix
 
     logger.info("[start] compute_metrics")
     
@@ -912,7 +919,120 @@ def get_score(TV_sim_matrix, TN_sim_matrix, multi_sentence_, cut_off_points_, sk
     R1 = tv_metrics['R1']
     R5 = tv_metrics['R5']
 
-    return R1, R5
+    return R1, R5, raw_2d_sim_matrix
+
+def save_baseline_retrieval(sim_matrix, dataset, save_path="baseline_preds.json", top_k=5):
+    """Save baseline retrieval results using original queries only."""
+    logger.info("Saving Baseline retrieval JSON to %s...", save_path)
+
+    if sim_matrix is None:
+        logger.warning("sim_matrix is None, skip saving baseline JSON.")
+        return
+
+    vid_ids = list(getattr(dataset, 'video_ids', []))
+    if not vid_ids:
+        vid_ids = ["video{}".format(i) for i in range(sim_matrix.shape[1])]
+
+    texts = list(getattr(dataset, 'sentences', []))
+    if not texts:
+        texts = ["Query_{}".format(i) for i in range(sim_matrix.shape[0])]
+
+    sim_tensor = torch.tensor(sim_matrix)
+    k = min(top_k, sim_tensor.shape[1])
+    _, topk_indices = torch.topk(sim_tensor, k=k, dim=-1)
+
+    results = {}
+    max_rows = min(sim_matrix.shape[0], len(vid_ids))
+    for i in range(max_rows):
+        gt_vid = vid_ids[i]
+        query = texts[i] if i < len(texts) else "Query_{}".format(i)
+        pred_vids = [vid_ids[idx.item()] if idx.item() < len(vid_ids) else "video{}".format(idx.item())
+                     for idx in topk_indices[i]]
+
+        results[gt_vid] = {
+            "cap_1": {
+                "original": query,
+                "original_answer": pred_vids
+            }
+        }
+
+    with open(save_path, 'w', encoding='utf-8') as f:
+        json.dump(results, f, ensure_ascii=False, indent=4)
+    logger.info("Finished saving Baseline retrieval JSON.")
+
+def save_augmented_retrieval(raw_sim_matrix, dataset, aug_json_path, save_path="augmented_preds.json", top_k=5):
+    """Save retrieval results for original + augmented queries."""
+    logger.info("Saving Augmented retrieval JSON to %s...", save_path)
+
+    if raw_sim_matrix is None:
+        logger.warning("raw_sim_matrix is None, skip saving augmented JSON.")
+        return
+
+    vid_ids = list(getattr(dataset, 'video_ids', []))
+    if not vid_ids:
+        vid_ids = ["video{}".format(i) for i in range(raw_sim_matrix.shape[1])]
+
+    all_texts = list(getattr(dataset, 'sentences', []))
+
+    with open(aug_json_path, 'r', encoding='utf-8') as f:
+        aug_data = json.load(f)
+
+    sim_tensor = torch.tensor(raw_sim_matrix)
+    k = min(top_k, sim_tensor.shape[1])
+    _, topk_indices = torch.topk(sim_tensor, k=k, dim=-1)
+
+    if hasattr(dataset, 'fqs_k'):
+        block_size = int(dataset.fqs_k) + 1
+    else:
+        block_size = max(1, raw_sim_matrix.shape[0] // max(1, len(vid_ids)))
+
+    results = {}
+    for vid_idx, gt_vid in enumerate(vid_ids):
+        base_row = vid_idx * block_size
+        if base_row >= raw_sim_matrix.shape[0]:
+            break
+
+        cap_key = "cap_1"
+        aug_list = []
+        if gt_vid in aug_data and isinstance(aug_data[gt_vid], dict):
+            cap_key = list(aug_data[gt_vid].keys())[0] if len(aug_data[gt_vid]) > 0 else "cap_1"
+            cap_payload = aug_data[gt_vid].get(cap_key, {})
+            if isinstance(cap_payload, dict):
+                aug_list = cap_payload.get("augment", [])
+            elif isinstance(cap_payload, list):
+                aug_list = cap_payload
+
+        orig_query = all_texts[base_row] if base_row < len(all_texts) else "Query_{}".format(base_row)
+        orig_vids = [vid_ids[idx.item()] if idx.item() < len(vid_ids) else "video{}".format(idx.item())
+                     for idx in topk_indices[base_row]]
+
+        augment_results = []
+        for i in range(block_size - 1):
+            row_idx = base_row + i + 1
+            if row_idx >= raw_sim_matrix.shape[0]:
+                break
+
+            default_aug = aug_list[i] if i < len(aug_list) else ""
+            aug_query = all_texts[row_idx] if row_idx < len(all_texts) else default_aug
+            aug_vids = [vid_ids[idx.item()] if idx.item() < len(vid_ids) else "video{}".format(idx.item())
+                        for idx in topk_indices[row_idx]]
+
+            augment_results.append({
+                "query": aug_query,
+                "answer": aug_vids
+            })
+
+        results[gt_vid] = {
+            cap_key: {
+                "original": orig_query,
+                "original_answer": orig_vids,
+                "augment": augment_results
+            }
+        }
+
+    with open(save_path, 'w', encoding='utf-8') as f:
+        json.dump(results, f, ensure_ascii=False, indent=4)
+    logger.info("Finished saving Augmented retrieval JSON.")
 
 def main():
     global logger
@@ -1032,7 +1152,7 @@ def main():
                 # logger.info("Eval on val dataset")
                 # R1 = eval_epoch(args, model, val_dataloader, device, n_gpu)
 
-                R1, R5 = eval_epoch(args, model, test_dataloader, device, n_gpu)
+                R1, R5, _ = eval_epoch(args, model, test_dataloader, device, n_gpu)
                 if should_save_best_score(R1, R5, best_score, best_score_r5):
                     best_score = R1
                     best_score_r5 = R5
@@ -1051,12 +1171,31 @@ def main():
     elif args.do_eval:
         if args.local_rank == 0:
             # Điều hướng tự động dựa trên tham số aug_json_path
+            save_path = args.save_jsons_path
+            if not os.path.isabs(save_path):
+                save_path = os.path.join(args.output_dir, save_path)
+
             if args.aug_json_path is not None:
                 logger.info("Starting Enriched Evaluation (FQS)...")
-                eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu)
+                R1, R5, raw_sim_matrix = eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu)
+                if args.save_jsons:
+                    save_augmented_retrieval(
+                        raw_sim_matrix=raw_sim_matrix,
+                        dataset=test_dataloader.dataset,
+                        aug_json_path=args.aug_json_path,
+                        save_path=save_path,
+                        top_k=5,
+                    )
             else:
                 logger.info("Starting Baseline Evaluation...")
-                eval_epoch(args, model, test_dataloader, device, n_gpu)
+                R1, R5, sim_matrix = eval_epoch(args, model, test_dataloader, device, n_gpu)
+                if args.save_jsons:
+                    save_baseline_retrieval(
+                        sim_matrix=sim_matrix,
+                        dataset=test_dataloader.dataset,
+                        save_path=save_path,
+                        top_k=5,
+                    )
 
 if __name__ == "__main__":
     main()

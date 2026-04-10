@@ -82,6 +82,36 @@ class MSRVTT_DataLoader(Dataset):
             print(f"DataLoader loading augmented queries from {aug_json_path}...")
             with open(aug_json_path, 'r') as f:
                 self.aug_data = json.load(f)
+
+        # Keep explicit mapping between retrieval matrix rows/cols and raw inputs.
+        # - video_ids maps to columns
+        # - sentences maps to rows in the order fed to the model
+        self.video_ids = self.data['video_id'].astype(str).tolist()
+        self.sentences = []
+        raw_sentences = self.data['sentence'].astype(str).tolist()
+        if self.aug_data is not None:
+            for video_id, sentence in zip(self.video_ids, raw_sentences):
+                self.sentences.append(sentence)
+                aug_sentences = []
+                if video_id in self.aug_data:
+                    video_aug = self.aug_data[video_id]
+                    if isinstance(video_aug, dict):
+                        for _cap_key, cap_data in video_aug.items():
+                            if isinstance(cap_data, dict) and cap_data.get("original", "") == sentence:
+                                aug_sentences = cap_data.get("augment", [])
+                                break
+                        if not aug_sentences and len(video_aug) > 0:
+                            first_cap = list(video_aug.values())[0]
+                            if isinstance(first_cap, dict):
+                                aug_sentences = first_cap.get("augment", [])
+                    elif isinstance(video_aug, list):
+                        aug_sentences = video_aug
+
+                for i in range(self.fqs_k):
+                    aug_query = aug_sentences[i] if i < len(aug_sentences) else sentence
+                    self.sentences.append(aug_query)
+        else:
+            self.sentences = raw_sentences
         # -------------------------------------------
 
     # ------ Same CLIP4Clip --------
