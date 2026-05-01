@@ -504,18 +504,18 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
                 # KHÔNG dùng dataloader nữa. Tự tạo Dummy Tensors (Batch Size = 1)
                 # Kích thước chuẩn: max_frames, 3 kênh màu, ảnh 224x224
                 b_size = 1
-                vid = torch.randn(b_size, args.max_frames, 3, 224, 224).to(device)
-                vid_mask = torch.ones(b_size, args.max_frames).to(device)
+                vid = torch.randn(b_size, 1, 1, args.max_frames, 3, 224, 224).to(device)
+                vid_mask = torch.ones(b_size, 1, args.max_frames).to(device)
 
                 # Kích thước chuẩn Text: max_words
-                in_ids = torch.randint(0, 30000, (b_size, args.max_words)).to(device)
-                in_mask = torch.ones(b_size, args.max_words).to(device)
-                seg_ids = torch.zeros(b_size, args.max_words, dtype=torch.long).to(device)
+                in_ids = torch.randint(0, 30000, (b_size, 1, args.max_words)).to(device)
+                in_mask = torch.ones(b_size, 1, args.max_words).to(device)
+                seg_ids = torch.zeros(b_size, 1, args.max_words, dtype=torch.long).to(device)
 
                 # Kích thước chuẩn Narration (Nếu có dùng, giả sử giống text)
-                nar = torch.randint(0, 30000, (b_size, args.max_words)).to(device)
-                nar_w_mask = torch.ones(b_size, args.max_words).to(device)
-                nar_mask = torch.ones(b_size, 1).to(device)
+                nar = torch.randint(0, 30000, (b_size, 1, args.max_frames, args.max_words)).to(device)
+                nar_w_mask = torch.ones(b_size, 1, args.max_frames, args.max_words).to(device)
+                nar_mask = torch.ones(b_size, 1, args.max_frames).to(device)
 
                 class VisWrap(torch.nn.Module):
                     def __init__(self, m):
@@ -755,19 +755,19 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
 
                 # Video Encoder vẫn chỉ chạy 1 lần (Batch Size = 1)
                 b_vid = 1
-                vid = torch.randn(b_vid, args.max_frames, 3, 224, 224).to(device)
-                vid_mask = torch.ones(b_vid, args.max_frames).to(device)
+                vid = torch.randn(b_vid, 1, 1, args.max_frames, 3, 224, 224).to(device)
+                vid_mask = torch.ones(b_vid, 1, args.max_frames).to(device)
 
                 # Narration Encoder cũng chạy 1 lần
-                nar = torch.randint(0, 30000, (b_vid, args.max_words)).to(device)
-                nar_w_mask = torch.ones(b_vid, args.max_words).to(device)
-                nar_mask = torch.ones(b_vid, 1).to(device)
+                nar = torch.randint(0, 30000, (b_vid, 1, args.max_frames, args.max_words)).to(device)
+                nar_w_mask = torch.ones(b_vid, 1, args.max_frames, args.max_words).to(device)
+                nar_mask = torch.ones(b_vid, 1, args.max_frames).to(device)
 
                 # NHƯNG Text Encoder phải chạy k_plus_1 lần (1 câu gốc + k câu aug)
                 b_txt = k_plus_1
-                in_ids = torch.randint(0, 30000, (b_txt, args.max_words)).to(device)
-                in_mask = torch.ones(b_txt, args.max_words).to(device)
-                seg_ids = torch.zeros(b_txt, args.max_words, dtype=torch.long).to(device)
+                in_ids = torch.randint(0, 30000, (b_vid, b_txt, args.max_words)).to(device)
+                in_mask = torch.ones(b_vid, b_txt, args.max_words).to(device)
+                seg_ids = torch.zeros(b_vid, b_txt, args.max_words, dtype=torch.long).to(device)
 
                 class VisWrap(torch.nn.Module):
                     def __init__(self, m):
