@@ -542,7 +542,7 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
                     def forward(self, n, nw, nm):
                         return self.m.get_narration_output(n, nw, nm)
 
-                profile_model = copy.deepcopy(model).to(device)
+                profile_model = copy.deepcopy(model.module if hasattr(model, 'module') else model).to(device)
                 profile_model.eval()
 
                 flops_v, _ = profile(VisWrap(profile_model), inputs=(vid, vid_mask), verbose=False)
@@ -799,7 +799,7 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
                     def forward(self, n, nw, nm):
                         return self.m.get_narration_output(n, nw, nm)
 
-                profile_model = copy.deepcopy(model).to(device)
+                profile_model = copy.deepcopy(model.module if hasattr(model, 'module') else model).to(device)
                 profile_model.eval()
 
                 flops_v, _ = profile(VisWrap(profile_model), inputs=(vid, vid_mask), verbose=False)
