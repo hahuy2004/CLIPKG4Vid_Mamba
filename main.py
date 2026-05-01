@@ -8,6 +8,7 @@ import numpy as np
 import random
 import os
 import json
+import copy
 from metrics import compute_metrics, tensor_text_to_video_metrics, tensor_video_to_text_sim
 import time
 import argparse
@@ -541,9 +542,14 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
                     def forward(self, n, nw, nm):
                         return self.m.get_narration_output(n, nw, nm)
 
-                flops_v, _ = profile(VisWrap(model), inputs=(vid, vid_mask), verbose=False)
-                flops_t, _ = profile(TextWrap(model), inputs=(in_ids, seg_ids, in_mask), verbose=False)
-                flops_n, _ = profile(NarWrap(model), inputs=(nar, nar_w_mask, nar_mask), verbose=False)
+                profile_model = copy.deepcopy(model).to(device)
+                profile_model.eval()
+
+                flops_v, _ = profile(VisWrap(profile_model), inputs=(vid, vid_mask), verbose=False)
+                flops_t, _ = profile(TextWrap(profile_model), inputs=(in_ids, seg_ids, in_mask), verbose=False)
+                flops_n, _ = profile(NarWrap(profile_model), inputs=(nar, nar_w_mask, nar_mask), verbose=False)
+
+                del profile_model
 
                 total_flops = flops_v + flops_t + flops_n
                 logger.info("Visual FLOPs: %.4f GFLOPs", flops_v / 1e9)
@@ -793,9 +799,14 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
                     def forward(self, n, nw, nm):
                         return self.m.get_narration_output(n, nw, nm)
 
-                flops_v, _ = profile(VisWrap(model), inputs=(vid, vid_mask), verbose=False)
-                flops_t, _ = profile(TextWrap(model), inputs=(in_ids, seg_ids, in_mask), verbose=False)
-                flops_n, _ = profile(NarWrap(model), inputs=(nar, nar_w_mask, nar_mask), verbose=False)
+                profile_model = copy.deepcopy(model).to(device)
+                profile_model.eval()
+
+                flops_v, _ = profile(VisWrap(profile_model), inputs=(vid, vid_mask), verbose=False)
+                flops_t, _ = profile(TextWrap(profile_model), inputs=(in_ids, seg_ids, in_mask), verbose=False)
+                flops_n, _ = profile(NarWrap(profile_model), inputs=(nar, nar_w_mask, nar_mask), verbose=False)
+
+                del profile_model
 
                 total_flops = flops_v + flops_t + flops_n
                 logger.info("Visual FLOPs: %.4f GFLOPs", flops_v / 1e9)
