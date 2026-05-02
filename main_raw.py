@@ -385,15 +385,7 @@ def train_epoch(epoch, args, model, train_dataloader, device, n_gpu, optimizer, 
                         torch.distributed.barrier()
                     if local_rank == 0:
                         logger.info("[Step Eval][%s] Evaluating at global_step %d...", args.datatype, global_step)
-                        
-                        # Use FQS evaluation if aug_json_path is provided, otherwise use baseline
-                        if args.aug_json_path is not None:
-                            logger.info("[Step Eval] Using Enriched Evaluation (FQS)...")
-                            R1, R5, _, _ = eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu)
-                        else:
-                            logger.info("[Step Eval] Using Baseline Evaluation...")
-                            R1, R5, _ = eval_epoch(args, model, test_dataloader, device, n_gpu)
-                        
+                        R1, R5, _ = eval_epoch(args, model, test_dataloader, device, n_gpu)
                         logger.info("[Step Eval] R1: %.4f, R5: %.4f | Best so far -> R1: %.4f, R5: %.4f",
                                     R1, R5, best_score, best_score_r5)
                         if should_save_best_score(R1, R5, best_score, best_score_r5):
@@ -1307,14 +1299,7 @@ def main():
                 # logger.info("Eval on val dataset")
                 # R1 = eval_epoch(args, model, val_dataloader, device, n_gpu)
 
-                # Use FQS evaluation if aug_json_path is provided, otherwise use baseline
-                if args.aug_json_path is not None:
-                    logger.info("Using Enriched Evaluation (FQS) at end of epoch...")
-                    R1, R5, _, _ = eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu)
-                else:
-                    logger.info("Using Baseline Evaluation at end of epoch...")
-                    R1, R5, _ = eval_epoch(args, model, test_dataloader, device, n_gpu)
-                
+                R1, R5, _ = eval_epoch(args, model, test_dataloader, device, n_gpu)
                 if should_save_best_score(R1, R5, best_score, best_score_r5):
                     best_score = R1
                     best_score_r5 = R5
