@@ -61,3 +61,4 @@ datasets/DiDeMo/didemo_data_2.zip
 datasets/DiDeMo/didemo_data_3.zip
 
 scripts/generate_captions.py
+datasets/MSRVTT/gen_file.py

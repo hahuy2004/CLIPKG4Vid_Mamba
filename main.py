@@ -984,8 +984,79 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
         logger.info("[FQS] Raw similarity matrix shape: ({}, {})".format(
             TV_sim_matrix.shape[0], TV_sim_matrix.shape[1]))
 
+    #     # ------------------------------------------------------------------
+    #     # 3. Reshape, Normalize, Fuse & Aggregate
+    #     # Điều này cho eval_fqs (k>0) ra kết quả trùng với eval_gốc (k=0)
+    #     # khi aug_query chứa các câu giống với câu gốc.
+    #     # Ở dưới thì không xảy ra TH trên do thay đổi cách chuẩn hóa + agg.
+    #     # ------------------------------------------------------------------
+    #     total_text_queries, n_videos = TV_sim_matrix.shape
+    #     n_unique = total_text_queries // k_plus_1
+
+    #     # Reshape: (N*(k+1), M) → (N, k+1, M) → (k+1, N, M)
+    #     TV_stacked = TV_sim_matrix.reshape(n_unique, k_plus_1, n_videos).transpose(1, 0, 2)
+    #     TN_stacked = TN_sim_matrix.reshape(n_unique, k_plus_1, n_videos).transpose(1, 0, 2)
+
+    #     if k_plus_1 > 1:
+    #         diff_tv = np.abs(TV_stacked[0] - TV_stacked[1]).sum()
+    #         diff_tn = np.abs(TN_stacked[0] - TN_stacked[1]).sum()
+    #         logger.info("[FQS][DEBUG] Sum abs diff TV (orig vs aug1): %.6f", diff_tv)
+    #         logger.info("[FQS][DEBUG] Sum abs diff TN (orig vs aug1): %.6f", diff_tn)
+    #         if diff_tv > 1e-5 or diff_tn > 1e-5:
+    #             logger.warning("[FQS][WARN] sim_matrices are not identical across variants.")
+
+    #     # --- BẮT ĐẦU PHẦN SỬA ---
+
+    #     # 3.1. Chuẩn hóa Z-score toàn cục cho Text-Video và Text-Narration TRƯỚC KHI FUSION
+    #     # (Làm giống hệt cách hàm get_score cũ đã làm)
+    #     TV_mean, TV_std = np.mean(TV_stacked), np.std(TV_stacked)
+    #     TV_norm = (TV_stacked - TV_mean) / (TV_std + 1e-8)
+
+    #     TN_mean, TN_std = np.mean(TN_stacked), np.std(TN_stacked)
+    #     TN_norm = (TN_stacked - TN_mean) / (TN_std + 1e-8)
+
+    #     # 3.2. LATE FUSION: Kết hợp TV và TN trên từng Query Variant
+    #     # Shape lúc này vẫn là: (k+1, n_unique, n_videos)
+    #     Combined_stacked = TV_norm + TN_norm
+
+    #     # 3.3. AGGREGATE trên ma trận đã Fusion
+    #     logger.info("[FQS] Aggregating {} query variants with strategy: {} "
+    #                 "(1=Weighted RRF, 2=Average, 3=Majority Voting, 4=Max Similarity)".format(
+    #                     k_plus_1, args.aggregation_strategy))
+    #     aggregator = Aggregator(strategy=args.aggregation_strategy)
+        
+    #     # Kết quả trả về là 1 ma trận duy nhất: (n_unique, n_videos)
+    #     Combined_sim_agg = aggregator.aggregate(Combined_stacked)
+
+    #     logger.info("[FQS] Aggregated similarity matrix shape: ({}, {})".format(
+    #         Combined_sim_agg.shape[0], Combined_sim_agg.shape[1]))
+
+    #     # --- KẾT THÚC PHẦN SỬA ---
+
+    # # 4. ĐƯA VÀO TÍNH ĐIỂM
+    # # Vì ta ĐÃ GỘP (TV + TN) và CHUẨN HÓA từ trước:
+    # # - Truyền Combined_sim_agg vào vị trí của TV
+    # # - Truyền ma trận toàn số 0 vào vị trí của TN (để nó không cộng thêm gì nữa)
+    # # - Bắt buộc set skip_norm=True để hàm get_score giữ nguyên điểm/rank của RRF
+    # zero_TN_matrix = np.zeros_like(Combined_sim_agg)
+    
+    # # Để giữ lại raw log cho debug giống bản cũ
+    # raw_2d_sim_matrix = TV_sim_matrix + TN_sim_matrix 
+    # agg_2d_sim_matrix = Combined_sim_agg
+
+    # R1, R5, _ = get_score(
+    #     TV_sim_matrix=Combined_sim_agg, 
+    #     TN_sim_matrix=zero_TN_matrix, 
+    #     multi_sentence_=multi_sentence_, 
+    #     cut_off_points_=cut_off_points_, 
+    #     skip_norm=True  # Bắt buộc True ở mọi strategy
+    # )
+    
+    # return R1, R5, raw_2d_sim_matrix, agg_2d_sim_matrix
+
         # ------------------------------------------------------------------
         # 3. Reshape & Aggregate: (N*k_plus_1, M) → (k+1, N, M) → (N, M)
+        # Agg bằng ranked sẽ có hướng đi khác với agg bằng logits score
         # ------------------------------------------------------------------
         raw_2d_sim_matrix = TV_sim_matrix + TN_sim_matrix
         total_text_queries, n_videos = TV_sim_matrix.shape
@@ -994,6 +1065,14 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
         # (N*(k+1), M) → (N, k+1, M) → (k+1, N, M)
         TV_stacked = TV_sim_matrix.reshape(n_unique, k_plus_1, n_videos).transpose(1, 0, 2)
         TN_stacked = TN_sim_matrix.reshape(n_unique, k_plus_1, n_videos).transpose(1, 0, 2)
+
+        if k_plus_1 > 1:
+            diff_tv = np.abs(TV_stacked[0] - TV_stacked[1]).sum()
+            diff_tn = np.abs(TN_stacked[0] - TN_stacked[1]).sum()
+            logger.info("[FQS][DEBUG] Sum abs diff TV (orig vs aug1): %.6f", diff_tv)
+            logger.info("[FQS][DEBUG] Sum abs diff TN (orig vs aug1): %.6f", diff_tn)
+            if diff_tv > 1e-5 or diff_tn > 1e-5:
+                logger.warning("[FQS][WARN] sim_matrices are not identical across variants.")
 
         logger.info("[FQS] Aggregating {} query variants with strategy: {} "
                     "(1=Weighted RRF, 2=Average, 3=Majority Voting, 4=Max Similarity)".format(
