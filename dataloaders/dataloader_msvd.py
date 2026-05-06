@@ -213,7 +213,23 @@ class MSVD_DataLoader(Dataset):
         # Rows 1..fqs_k: augmented queries
         aug_sentences = []
         if self.aug_data is not None and video_id in self.aug_data:
-            aug_sentences = self.aug_data[video_id][:self.fqs_k]
+            aug_payload = self.aug_data[video_id]
+            if isinstance(aug_payload, dict):
+                for _cap_key, cap_data in aug_payload.items():
+                    if isinstance(cap_data, dict) and cap_data.get("original", "") == caption:
+                        aug_sentences = cap_data.get("augment", [])
+                        break
+
+                if not aug_sentences and len(aug_payload) > 0:
+                    first_val = next(iter(aug_payload.values()), [])
+                    if isinstance(first_val, dict):
+                        aug_sentences = first_val.get("augment", [])
+                    elif isinstance(first_val, list):
+                        aug_sentences = first_val
+            elif isinstance(aug_payload, list):
+                aug_sentences = aug_payload
+
+            aug_sentences = aug_sentences[:self.fqs_k]
 
         for i in range(self.fqs_k):
             if i < len(aug_sentences):
