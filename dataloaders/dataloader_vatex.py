@@ -29,6 +29,8 @@ class VATEX_DataLoader(Dataset):
             frame_order=0,
             slice_framepos=0,
             video_data_type='frames',
+            aug_json_path=None,
+            fqs_k=2,
     ):
         self.data_path = data_path
         self.narration = json.load(open(narration_path, 'r'))
@@ -47,6 +49,15 @@ class VATEX_DataLoader(Dataset):
         # ----------- New: video_data_type -----------
         self.video_data_type = video_data_type
         assert self.video_data_type in ['video', 'frames']
+        # -------------------------------------------
+
+        # ----------- New: aug_data & fqs_k -----------
+        self.fqs_k = fqs_k
+        self.aug_data = None
+        if aug_json_path is not None and os.path.exists(aug_json_path):
+            print(f"DataLoader loading augmented queries from {aug_json_path}...")
+            with open(aug_json_path, 'r') as f:
+                self.aug_data = json.load(f)
         # -------------------------------------------
         
         self.subset = subset
@@ -139,6 +150,63 @@ class VATEX_DataLoader(Dataset):
             pairs_segment[i] = np.array(segment_ids)
 
         return pairs_text, pairs_mask, pairs_segment, choice_video_ids
+
+    # ------ New: get text for original + augmented queries --------
+    def _get_text_with_aug(self, video_id, query):
+        """Tokenize the original sentence plus self.fqs_k augmented queries.
+        Returns shape (1 + fqs_k, max_words) for text/mask/segment.
+        """
+        total_queries = 1 + self.fqs_k
+
+        pairs_text = np.zeros((total_queries, self.max_words), dtype=np.long)
+        pairs_mask = np.zeros((total_queries, self.max_words), dtype=np.long)
+        pairs_segment = np.zeros((total_queries, self.max_words), dtype=np.long)
+
+        def _tokenize_sentence(sent):
+            words = self.tokenizer.tokenize(sent)
+            words = [self.SPECIAL_TOKEN["CLS_TOKEN"]] + words
+            total_length_with_CLS = self.max_words - 1
+            if len(words) > total_length_with_CLS:
+                words = words[:total_length_with_CLS]
+            words += [self.SPECIAL_TOKEN["SEP_TOKEN"]]
+            
+            input_ids = self.tokenizer.convert_tokens_to_ids(words)
+            input_mask = [1] * len(input_ids)
+            segment_ids = [0] * len(input_ids)
+            while len(input_ids) < self.max_words:
+                input_ids.append(0)
+                input_mask.append(0)
+                segment_ids.append(0)
+            
+            assert len(input_ids) == self.max_words
+            assert len(input_mask) == self.max_words
+            assert len(segment_ids) == self.max_words
+            
+            return input_ids, input_mask, segment_ids
+
+        # Row 0: original query
+        input_ids, input_mask, segment_ids = _tokenize_sentence(query)
+        pairs_text[0] = np.array(input_ids)
+        pairs_mask[0] = np.array(input_mask)
+        pairs_segment[0] = np.array(segment_ids)
+
+        # Rows 1..fqs_k: augmented queries
+        aug_sentences = []
+        if self.aug_data is not None and video_id in self.aug_data:
+            aug_sentences = self.aug_data[video_id][:self.fqs_k]
+
+        for i in range(self.fqs_k):
+            if i < len(aug_sentences):
+                input_ids, input_mask, segment_ids = _tokenize_sentence(aug_sentences[i])
+            else:
+                input_ids, input_mask, segment_ids = _tokenize_sentence("")
+            
+            pairs_text[i + 1] = np.array(input_ids)
+            pairs_mask[i + 1] = np.array(input_mask)
+            pairs_segment[i + 1] = np.array(segment_ids)
+
+        return pairs_text, pairs_mask, pairs_segment
+    # ----------------------------------------------
 
     def _get_rawframes(self, choice_video_ids):
         video_mask = np.zeros((len(choice_video_ids), self.max_frames), dtype=np.long)
@@ -263,7 +331,13 @@ class VATEX_DataLoader(Dataset):
     def __getitem__(self, idx):
         video_id, query = self.sentences_dict[idx]
 
-        pairs_text, pairs_mask, pairs_segment, choice_video_ids = self._get_text(video_id, query)
+        # Get text with or without augmentation
+        if self.aug_data is not None:
+            pairs_text, pairs_mask, pairs_segment = self._get_text_with_aug(video_id, query)
+            choice_video_ids = [video_id]
+        else:
+            pairs_text, pairs_mask, pairs_segment, choice_video_ids = self._get_text(video_id, query)
+        
         narration, captions_word_mask = self._get_narration(choice_video_ids)
         # Choose between raw video or raw frames based on video_data_type
         if self.video_data_type == 'video':

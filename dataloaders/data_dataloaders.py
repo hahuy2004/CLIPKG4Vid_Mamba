@@ -103,6 +103,8 @@ def dataloader_msvd_test(args, tokenizer, subset="test"):
         frame_order=args.eval_frame_order,
         slice_framepos=args.slice_framepos,
         video_data_type=args.video_data_type,
+        aug_json_path=args.aug_json_path,
+        fqs_k=args.fqs_k,
     )
     dataloader_msrvtt = DataLoader(
         msvd_testset,
@@ -154,6 +156,8 @@ def dataloader_vatex_test(args, tokenizer, subset="test"):
         frame_order=args.eval_frame_order,
         slice_framepos=args.slice_framepos,
         video_data_type=args.video_data_type,
+        aug_json_path=args.aug_json_path,
+        fqs_k=args.fqs_k,
     )
     dataloader_vatex = DataLoader(
         vatex_testset,
@@ -205,6 +209,8 @@ def dataloader_didemo_test(args, tokenizer, subset="test"):
         frame_order=args.eval_frame_order,
         slice_framepos=args.slice_framepos,
         video_data_type=args.video_data_type,
+        aug_json_path=args.aug_json_path,
+        fqs_k=args.fqs_k,
     )
     dataloader_didemo = DataLoader(
         didemo_testset,
@@ -257,6 +263,8 @@ def dataloader_activitynet_test(args, tokenizer, subset="val"):
         frame_order=args.eval_frame_order,
         slice_framepos=args.slice_framepos,
         video_data_type=args.video_data_type,
+        aug_json_path=args.aug_json_path,
+        fqs_k=args.fqs_k,
     )
     dataloader_activitynet = DataLoader(
         activitynet_testset,
