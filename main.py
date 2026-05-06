@@ -502,72 +502,72 @@ def eval_epoch(args, model, test_dataloader, device, n_gpu):
 
     model.eval()
     with torch.no_grad():
-        # # =====================================================================
-        # # BẮT ĐẦU ĐO GFLOPs: STANDARD EVAL (Dùng Dummy Tensors - An toàn tuyệt đối)
-        # # =====================================================================
-        # if args.do_eval:
-        #     try:
-        #         from thop import profile
-        #         logger.info("--- ĐANG TÍNH TOÁN GFLOPs (STANDARD EVAL) ---")
+        # =====================================================================
+        # BẮT ĐẦU ĐO GFLOPs: STANDARD EVAL (Dùng Dummy Tensors - An toàn tuyệt đối)
+        # =====================================================================
+        if args.do_eval:
+            try:
+                from thop import profile
+                logger.info("--- ĐANG TÍNH TOÁN GFLOPs (STANDARD EVAL) ---")
 
-        #         # KHÔNG dùng dataloader nữa. Tự tạo Dummy Tensors (Batch Size = 1)
-        #         # Kích thước chuẩn: max_frames, 3 kênh màu, ảnh 224x224
-        #         b_size = 1
-        #         vid = torch.randn(b_size, 1, 1, args.max_frames, 3, 224, 224).to(device)
-        #         vid_mask = torch.ones(b_size, 1, args.max_frames).to(device)
+                # KHÔNG dùng dataloader nữa. Tự tạo Dummy Tensors (Batch Size = 1)
+                # Kích thước chuẩn: max_frames, 3 kênh màu, ảnh 224x224
+                b_size = 1
+                vid = torch.randn(b_size, 1, 1, args.max_frames, 3, 224, 224).to(device)
+                vid_mask = torch.ones(b_size, 1, args.max_frames).to(device)
 
-        #         # Kích thước chuẩn Text: max_words
-        #         in_ids = torch.randint(0, 30000, (b_size, 1, args.max_words)).to(device)
-        #         in_mask = torch.ones(b_size, 1, args.max_words).to(device)
-        #         seg_ids = torch.zeros(b_size, 1, args.max_words, dtype=torch.long).to(device)
+                # Kích thước chuẩn Text: max_words
+                in_ids = torch.randint(0, 30000, (b_size, 1, args.max_words)).to(device)
+                in_mask = torch.ones(b_size, 1, args.max_words).to(device)
+                seg_ids = torch.zeros(b_size, 1, args.max_words, dtype=torch.long).to(device)
 
-        #         # Kích thước chuẩn Narration (Nếu có dùng, giả sử giống text)
-        #         nar = torch.randint(0, 30000, (b_size, 1, args.max_frames, args.max_words)).to(device)
-        #         nar_w_mask = torch.ones(b_size, 1, args.max_frames, args.max_words).to(device)
-        #         nar_mask = torch.ones(b_size, 1, args.max_frames).to(device)
+                # Kích thước chuẩn Narration (Nếu có dùng, giả sử giống text)
+                nar = torch.randint(0, 30000, (b_size, 1, args.max_frames, args.max_words)).to(device)
+                nar_w_mask = torch.ones(b_size, 1, args.max_frames, args.max_words).to(device)
+                nar_mask = torch.ones(b_size, 1, args.max_frames).to(device)
 
-        #         class VisWrap(torch.nn.Module):
-        #             def __init__(self, m):
-        #                 super().__init__()
-        #                 self.m = m
+                class VisWrap(torch.nn.Module):
+                    def __init__(self, m):
+                        super().__init__()
+                        self.m = m
 
-        #             def forward(self, v, vm):
-        #                 return self.m.get_visual_output(v, vm)
+                    def forward(self, v, vm):
+                        return self.m.get_visual_output(v, vm)
 
-        #         class TextWrap(torch.nn.Module):
-        #             def __init__(self, m):
-        #                 super().__init__()
-        #                 self.m = m
+                class TextWrap(torch.nn.Module):
+                    def __init__(self, m):
+                        super().__init__()
+                        self.m = m
 
-        #             def forward(self, i, s, m):
-        #                 return self.m.get_sequence_words_output(i, s, m)
+                    def forward(self, i, s, m):
+                        return self.m.get_sequence_words_output(i, s, m)
 
-        #         class NarWrap(torch.nn.Module):
-        #             def __init__(self, m):
-        #                 super().__init__()
-        #                 self.m = m
+                class NarWrap(torch.nn.Module):
+                    def __init__(self, m):
+                        super().__init__()
+                        self.m = m
 
-        #             def forward(self, n, nw, nm):
-        #                 return self.m.get_narration_output(n, nw, nm)
+                    def forward(self, n, nw, nm):
+                        return self.m.get_narration_output(n, nw, nm)
 
-        #         profile_model = copy.deepcopy(model.module if hasattr(model, 'module') else model).to(device)
-        #         profile_model.eval()
+                profile_model = copy.deepcopy(model.module if hasattr(model, 'module') else model).to(device)
+                profile_model.eval()
 
-        #         flops_v, _ = profile(VisWrap(profile_model), inputs=(vid, vid_mask), verbose=False)
-        #         flops_t, _ = profile(TextWrap(profile_model), inputs=(in_ids, seg_ids, in_mask), verbose=False)
-        #         flops_n, _ = profile(NarWrap(profile_model), inputs=(nar, nar_w_mask, nar_mask), verbose=False)
+                flops_v, _ = profile(VisWrap(profile_model), inputs=(vid, vid_mask), verbose=False)
+                flops_t, _ = profile(TextWrap(profile_model), inputs=(in_ids, seg_ids, in_mask), verbose=False)
+                flops_n, _ = profile(NarWrap(profile_model), inputs=(nar, nar_w_mask, nar_mask), verbose=False)
 
-        #         del profile_model
+                del profile_model
 
-        #         total_flops = flops_v + flops_t + flops_n
-        #         logger.info("Visual FLOPs: %.4f GFLOPs", flops_v / 1e9)
-        #         logger.info("Text FLOPs: %.4f GFLOPs", flops_t / 1e9)
-        #         logger.info("Narration FLOPs: %.4f GFLOPs", flops_n / 1e9)
-        #         logger.info("Total FLOPs: %.4f GFLOPs / 1 Query", total_flops / 1e9)
-        #         logger.info("-----------------------------------------------------")
-        #     except Exception as e:
-        #         logger.warning("Unable to calculate GFLOPs: %s", e)
-        # # =====================================================================
+                total_flops = flops_v + flops_t + flops_n
+                logger.info("Visual FLOPs: %.4f GFLOPs", flops_v / 1e9)
+                logger.info("Text FLOPs: %.4f GFLOPs", flops_t / 1e9)
+                logger.info("Narration FLOPs: %.4f GFLOPs", flops_n / 1e9)
+                logger.info("Total FLOPs: %.4f GFLOPs / 1 Query", total_flops / 1e9)
+                logger.info("-----------------------------------------------------")
+            except Exception as e:
+                logger.warning("Unable to calculate GFLOPs: %s", e)
+        # =====================================================================
 
         batch_list_t = []
         batch_list_v = []
@@ -759,72 +759,72 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
 
     model.eval()
     with torch.no_grad():
-        # # =====================================================================
-        # # BẮT ĐẦU ĐO GFLOPs: ENRICHED EVAL (Dùng Dummy Tensors - An toàn tuyệt đối)
-        # # =====================================================================
-        # if args.do_eval:
-        #     try:
-        #         from thop import profile
-        #         logger.info("--- Calculating GFLOPs (ENRICHED EVAL - 1 Ori + %d Aug) ---", args.fqs_k)
+        # =====================================================================
+        # BẮT ĐẦU ĐO GFLOPs: ENRICHED EVAL (Dùng Dummy Tensors - An toàn tuyệt đối)
+        # =====================================================================
+        if args.do_eval:
+            try:
+                from thop import profile
+                logger.info("--- Calculating GFLOPs (ENRICHED EVAL - 1 Ori + %d Aug) ---", args.fqs_k)
 
-        #         # Video Encoder vẫn chỉ chạy 1 lần (Batch Size = 1)
-        #         b_vid = 1
-        #         vid = torch.randn(b_vid, 1, 1, args.max_frames, 3, 224, 224).to(device)
-        #         vid_mask = torch.ones(b_vid, 1, args.max_frames).to(device)
+                # Video Encoder vẫn chỉ chạy 1 lần (Batch Size = 1)
+                b_vid = 1
+                vid = torch.randn(b_vid, 1, 1, args.max_frames, 3, 224, 224).to(device)
+                vid_mask = torch.ones(b_vid, 1, args.max_frames).to(device)
 
-        #         # Narration Encoder cũng chạy 1 lần
-        #         nar = torch.randint(0, 30000, (b_vid, 1, args.max_frames, args.max_words)).to(device)
-        #         nar_w_mask = torch.ones(b_vid, 1, args.max_frames, args.max_words).to(device)
-        #         nar_mask = torch.ones(b_vid, 1, args.max_frames).to(device)
+                # Narration Encoder cũng chạy 1 lần
+                nar = torch.randint(0, 30000, (b_vid, 1, args.max_frames, args.max_words)).to(device)
+                nar_w_mask = torch.ones(b_vid, 1, args.max_frames, args.max_words).to(device)
+                nar_mask = torch.ones(b_vid, 1, args.max_frames).to(device)
 
-        #         # NHƯNG Text Encoder phải chạy k_plus_1 lần (1 câu gốc + k câu aug)
-        #         b_txt = k_plus_1
-        #         in_ids = torch.randint(0, 30000, (b_vid, b_txt, args.max_words)).to(device)
-        #         in_mask = torch.ones(b_vid, b_txt, args.max_words).to(device)
-        #         seg_ids = torch.zeros(b_vid, b_txt, args.max_words, dtype=torch.long).to(device)
+                # NHƯNG Text Encoder phải chạy k_plus_1 lần (1 câu gốc + k câu aug)
+                b_txt = k_plus_1
+                in_ids = torch.randint(0, 30000, (b_vid, b_txt, args.max_words)).to(device)
+                in_mask = torch.ones(b_vid, b_txt, args.max_words).to(device)
+                seg_ids = torch.zeros(b_vid, b_txt, args.max_words, dtype=torch.long).to(device)
 
-        #         class VisWrap(torch.nn.Module):
-        #             def __init__(self, m):
-        #                 super().__init__()
-        #                 self.m = m
+                class VisWrap(torch.nn.Module):
+                    def __init__(self, m):
+                        super().__init__()
+                        self.m = m
 
-        #             def forward(self, v, vm):
-        #                 return self.m.get_visual_output(v, vm)
+                    def forward(self, v, vm):
+                        return self.m.get_visual_output(v, vm)
 
-        #         class TextWrap(torch.nn.Module):
-        #             def __init__(self, m):
-        #                 super().__init__()
-        #                 self.m = m
+                class TextWrap(torch.nn.Module):
+                    def __init__(self, m):
+                        super().__init__()
+                        self.m = m
 
-        #             def forward(self, i, s, m):
-        #                 return self.m.get_sequence_words_output(i, s, m)
+                    def forward(self, i, s, m):
+                        return self.m.get_sequence_words_output(i, s, m)
 
-        #         class NarWrap(torch.nn.Module):
-        #             def __init__(self, m):
-        #                 super().__init__()
-        #                 self.m = m
+                class NarWrap(torch.nn.Module):
+                    def __init__(self, m):
+                        super().__init__()
+                        self.m = m
 
-        #             def forward(self, n, nw, nm):
-        #                 return self.m.get_narration_output(n, nw, nm)
+                    def forward(self, n, nw, nm):
+                        return self.m.get_narration_output(n, nw, nm)
 
-        #         profile_model = copy.deepcopy(model.module if hasattr(model, 'module') else model).to(device)
-        #         profile_model.eval()
+                profile_model = copy.deepcopy(model.module if hasattr(model, 'module') else model).to(device)
+                profile_model.eval()
 
-        #         flops_v, _ = profile(VisWrap(profile_model), inputs=(vid, vid_mask), verbose=False)
-        #         flops_t, _ = profile(TextWrap(profile_model), inputs=(in_ids, seg_ids, in_mask), verbose=False)
-        #         flops_n, _ = profile(NarWrap(profile_model), inputs=(nar, nar_w_mask, nar_mask), verbose=False)
+                flops_v, _ = profile(VisWrap(profile_model), inputs=(vid, vid_mask), verbose=False)
+                flops_t, _ = profile(TextWrap(profile_model), inputs=(in_ids, seg_ids, in_mask), verbose=False)
+                flops_n, _ = profile(NarWrap(profile_model), inputs=(nar, nar_w_mask, nar_mask), verbose=False)
 
-        #         del profile_model
+                del profile_model
 
-        #         total_flops = flops_v + flops_t + flops_n
-        #         logger.info("Visual FLOPs: %.4f GFLOPs", flops_v / 1e9)
-        #         logger.info("Text FLOPs: %.4f GFLOPs (%d queries)", flops_t / 1e9, k_plus_1)
-        #         logger.info("Narration FLOPs: %.4f GFLOPs", flops_n / 1e9)
-        #         logger.info("Total FLOPs: %.4f GFLOPs / 1 Enriched Query", total_flops / 1e9)
-        #         logger.info("-----------------------------------------------------")
-        #     except Exception as e:
-        #         logger.warning("Unable to calculate GFLOPs: %s", e)
-        # # =====================================================================
+                total_flops = flops_v + flops_t + flops_n
+                logger.info("Visual FLOPs: %.4f GFLOPs", flops_v / 1e9)
+                logger.info("Text FLOPs: %.4f GFLOPs (%d queries)", flops_t / 1e9, k_plus_1)
+                logger.info("Narration FLOPs: %.4f GFLOPs", flops_n / 1e9)
+                logger.info("Total FLOPs: %.4f GFLOPs / 1 Enriched Query", total_flops / 1e9)
+                logger.info("-----------------------------------------------------")
+            except Exception as e:
+                logger.warning("Unable to calculate GFLOPs: %s", e)
+        # =====================================================================
 
         batch_list_t = []
         batch_list_v = []
