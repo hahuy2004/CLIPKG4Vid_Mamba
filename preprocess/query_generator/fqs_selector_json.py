@@ -10,6 +10,9 @@ Usage NQS:
 
 Usage Random:
     python fqs_selector.py --k 2 --random --seed 42 --input_path data.json
+
+Usage with No Sort (Keep algorithm's output order instead of original order):
+    python fqs_selector.py --k 2 --input_path data.json --no_sort
 """
 
 import numpy as np
@@ -27,10 +30,10 @@ def load_clip_model():
         import clip
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model, preprocess = clip.load("ViT-B/32", device=device)
-        print(f"✅ Loaded CLIP ViT-B/32 on {device}")
+        print(f"Loaded CLIP ViT-B/32 on {device}")
         return model, device
     except ImportError:
-        print("❌ CLIP not found. Installing...")
+        print("CLIP not found. Installing...")
         os.system("pip install git+https://github.com/openai/CLIP.git")
         import clip
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -151,29 +154,34 @@ def nearest_query_sampling(query_embeddings, k=2, threshold=None, return_indices
     return selected_indices if return_indices else embeddings_np[selected_indices]
 
 
-def apply_selection_to_json_item(original, augment, k, model=None, device=None, threshold=None, is_nqs=False, is_random=False):
+def apply_selection_to_json_item(original, augment, k, model=None, device=None, threshold=None, is_nqs=False, is_random=False, sort_results=True):
     """Apply selected algorithm to select k augmentations for a single caption group."""
     if len(augment) < k:
-        print(f"⚠️ Warning: Only {len(augment)} augments available, need {k}. Returning all.")
+        print(f"Warning: Only {len(augment)} augments available, need {k}. Returning all.")
         return augment
 
-    # Random Logic - No CLIP needed
+    # Logic chọn k augment
     if is_random:
-        return random.sample(augment, k)
-
-    # FQS/NQS Logic - Requires CLIP embeddings
-    # Put original at index 0, followed by augments
-    all_texts = [original] + augment
-    embeddings = encode_texts(all_texts, model, device)
-
-    if is_nqs:
-        selected_indices = nearest_query_sampling(embeddings, k=k, threshold=threshold, return_indices=True)
+        selected_augments = random.sample(augment, k)
     else:
-        selected_indices = farthest_query_selection(embeddings, k=k, threshold=threshold, return_indices=True)
+        # FQS/NQS Logic - Requires CLIP embeddings
+        all_texts = [original] + augment
+        embeddings = encode_texts(all_texts, model, device)
 
-    # selected_indices[0] is always 0 (the original text). 
-    # We slice [1:] to get the indices of the selected augmentations.
-    selected_augments = [all_texts[idx] for idx in selected_indices[1:]]
+        if is_nqs:
+            selected_indices = nearest_query_sampling(embeddings, k=k, threshold=threshold, return_indices=True)
+        else:
+            selected_indices = farthest_query_selection(embeddings, k=k, threshold=threshold, return_indices=True)
+
+        selected_augments = [all_texts[idx] for idx in selected_indices[1:]]
+
+    # --- PHẦN MỚI THÊM: SẮP XẾP LẠI THEO THỨ TỰ GỐC ---
+    if sort_results:
+        # Tạo mapping để tra cứu vị trí (index) nhanh của câu augment trong mảng gốc
+        original_order = {text: idx for idx, text in enumerate(augment)}
+        # Sắp xếp mảng kết quả dựa trên vị trí gốc
+        selected_augments.sort(key=lambda x: original_order[x])
+
     return selected_augments
 
 
@@ -192,6 +200,9 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--nqs", action="store_true", help="Use Nearest Query Sampling (NQS)")
     group.add_argument("--random", action="store_true", help="Use Random Query Sampling")
+    
+    # Flags for sorting
+    parser.add_argument("--no_sort", action="store_true", help="If passed, will NOT sort the output back to original JSON order.")
     
     # Random seed
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
@@ -230,6 +241,7 @@ def main():
     print(f"Input:  {args.input_path}")
     print(f"Output: {args.output_path}")
     print(f"k:      {args.k} (augmentations selected per caption)")
+    print(f"Sort:   {'No' if args.no_sort else 'Yes'} (Restore original JSON order)")
     if not args.random:
         print(f"Threshold (s): {args.threshold if args.threshold is not None else 'None'}")
     print("=" * 70)
@@ -237,20 +249,23 @@ def main():
     # Only load CLIP if we actually need it (FQS or NQS)
     model, device = None, None
     if not args.random:
-        print("\n🔧 Loading CLIP model...")
+        print("\nLoading CLIP model...")
         model, device = load_clip_model()
     else:
-        print("\n⚡ Skipping CLIP loading (Random mode is fast!)...")
+        print("\nSkipping CLIP loading (Random mode is fast!)...")
     
     # Đọc dữ liệu JSON
-    print(f"\n📂 Loading JSON from: {args.input_path}")
+    print(f"\nLoading JSON from: {args.input_path}")
     with open(args.input_path, 'r', encoding='utf-8') as f:
         input_data = json.load(f)
-    print(f"✅ Loaded {len(input_data)} videos")
+    print(f"Loaded {len(input_data)} videos")
     
-    print(f"\n🎯 Applying Algorithm (k={args.k})...")
+    print(f"\nApplying Algorithm (k={args.k})...")
     output_data = {}
     
+    # Sort behavior config
+    sort_results = not args.no_sort
+
     # Xử lý từng video và từng caption
     for video_id, caps in tqdm(input_data.items(), desc="Processing videos"):
         output_data[video_id] = {}
@@ -258,7 +273,7 @@ def main():
             original_text = cap_data["original"]
             augment_texts = cap_data["augment"]
             
-            # Lựa chọn k câu augment
+            # Lựa chọn k câu augment (bao gồm truyền flag sort_results)
             selected_augments = apply_selection_to_json_item(
                 original=original_text,
                 augment=augment_texts,
@@ -267,7 +282,8 @@ def main():
                 device=device,
                 threshold=args.threshold,
                 is_nqs=args.nqs,
-                is_random=args.random
+                is_random=args.random,
+                sort_results=sort_results
             )
             
             output_data[video_id][cap_key] = {
@@ -275,17 +291,16 @@ def main():
                 "augment": selected_augments
             }
     
-    print(f"\n💾 Saving results...")
+    print(f"\nSaving results...")
     with open(args.output_path, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
     
     print("\n" + "=" * 70)
     algo_short = "RANDOM" if args.random else ("NQS" if args.nqs else "FQS")
-    print(f"✨ {algo_short} COMPLETED!")
+    print(f"{algo_short} COMPLETED!")
     print("=" * 70)
-    print(f"📊 Processed: {len(input_data)} videos")
-    print(f"📄 Output saved to: {args.output_path}")
-
+    print(f"Processed: {len(input_data)} videos")
+    print(f"Output saved to: {args.output_path}")
 
 if __name__ == "__main__":
     main()

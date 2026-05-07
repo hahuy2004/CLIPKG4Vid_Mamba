@@ -63,3 +63,5 @@ datasets/DiDeMo/didemo_data_3.zip
 
 scripts/generate_captions.py
 datasets/MSRVTT/gen_file.py
+
+preprocess/query_generator/fqs_selector.py
