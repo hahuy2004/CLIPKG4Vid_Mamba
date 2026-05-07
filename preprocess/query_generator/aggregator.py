@@ -164,8 +164,21 @@ class Aggregator:
         # to prevent the sum of enriched weights from overwhelming the original
         # when k is large.
         weights = [1.0]
+        
+        # Lựa chọn 1: Trọng số giảm dần theo cấp số nhân (exponential decay)
         for i in range(1, k_plus_1):
             weights.append(0.5 / i)
+
+        # Lựa chọn 2: Trọng số cố định cho enriched queries
+        # if k_plus_1 > 1:
+        #     # Chia sẻ trọng số (Shared Weight)
+        #     # Tổng sức mạnh của tất cả các câu FQS hợp lại mới bằng câu gốc (1.0).
+        #     # Nếu k=2 (thêm 2 câu), mỗi câu aug sẽ nhận 0.5. Trưởng nhóm (1.0) = 2 thành viên (0.5 + 0.5).
+        #     aug_weight = 1.0 / (k_plus_1 - 1)
+            
+        #     # Gán trọng số bằng nhau cho tất cả các câu từ index 1 trở đi
+        #     for i in range(1, k_plus_1):
+        #         weights.append(aug_weight)
         
         # 2. Smoothing constant for RRF
         # k=1.0 provides good balance:

@@ -985,7 +985,7 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
             TV_sim_matrix.shape[0], TV_sim_matrix.shape[1]))
 
     #     # ------------------------------------------------------------------
-    #     # 3. Reshape, Normalize, Fuse & Aggregate
+    #     # 3. Reshape, Normalize, Fuse & Aggregate - Early Fusion
     #     # Điều này cho eval_fqs (k>0) ra kết quả trùng với eval_gốc (k=0)
     #     # khi aug_query chứa các câu giống với câu gốc.
     #     # Ở dưới thì không xảy ra TH trên do thay đổi cách chuẩn hóa + agg.
@@ -1056,6 +1056,7 @@ def eval_epoch_for_fqs(args, model, test_dataloader, device, n_gpu):
 
         # ------------------------------------------------------------------
         # 3. Reshape & Aggregate: (N*k_plus_1, M) → (k+1, N, M) → (N, M)
+        # Late fusion
         # Agg bằng ranked sẽ có hướng đi khác với agg bằng logits score
         # ------------------------------------------------------------------
         raw_2d_sim_matrix = TV_sim_matrix + TN_sim_matrix
