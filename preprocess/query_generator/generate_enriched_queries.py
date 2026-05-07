@@ -364,10 +364,10 @@ Examples:
     
     # Apply max_samples limit if specified
     if args.max_samples:
-        print(f"\n⚠️  Limiting to first {args.max_samples} samples for testing")
+        print(f"\nLimiting to first {args.max_samples} samples for testing")
         input_captions = dict(list(input_captions.items())[:args.max_samples])
     
-    print(f"\n📊 Total captions to enrich: {len(input_captions)}")
+    print(f"\nTotal captions to enrich: {len(input_captions)}")
     
     # Generate enriched queries
     print("\n" + "="*70)
@@ -383,7 +383,7 @@ Examples:
         sleep_time=args.sleep_time
     )
     
-    print("\n✅ Query generation completed!")
+    print("\nQuery generation completed!")
     print(f"Generated {len(enriched_data)} enriched video captions")
     
     # Save in format-specific output
@@ -393,30 +393,46 @@ Examples:
     
     if args.datatype == "msrvtt":
         save_msrvtt_enriched_csv(enriched_data, original_data, args.output_csv, args.n_variations)
-        save_reference_json(enriched_data, args.output_reference)
+        # save_reference_json(enriched_data, args.output_reference)
+
+        # --- BẮT ĐẦU PHẦN SỬA ĐỔI ---
+        # Tạo một dictionary mới dùng video_id làm key thay vì ret_...
+        video_id_enriched_data = {}
+        for key, captions in enriched_data.items():
+            video_id = original_data[key]['video_id']
+            
+            # Gộp các captions vào danh sách của video_id 
+            # (Dùng extend đề phòng trường hợp 1 video_id có nhiều queries ret_... khác nhau)
+            if video_id not in video_id_enriched_data:
+                video_id_enriched_data[video_id] = []
+            video_id_enriched_data[video_id].extend(captions)
+            
+        # Lưu file JSON sử dụng dictionary mới có key là video_id
+        save_reference_json(video_id_enriched_data, args.output_reference)
+        # --- KẾT THÚC PHẦN SỬA ĐỔI ---
         
-        print(f"\n✅ MSRVTT outputs saved:")
-        print(f"  📄 CSV: {args.output_csv}")
-        print(f"  📄 Reference JSON: {args.output_reference}")
+        print(f"\nMSRVTT outputs saved:")
+        print(f"  CSV: {args.output_csv}")
+        print(f"  Reference JSON: {args.output_reference}")
         
     elif args.datatype == "msvd":
         save_msvd_enriched_pkl(enriched_data, original_captions_dict, args.output_pkl)
         save_reference_json(enriched_data, args.output_reference)
         
-        print(f"\n✅ MSVD outputs saved:")
-        print(f"  📄 Pickle: {args.output_pkl}")
-        print(f"  📄 Reference JSON: {args.output_reference}")
+        print(f"\nMSVD outputs saved:")
+        print(f"  Pickle: {args.output_pkl}")
+        print(f"  Reference JSON: {args.output_reference}")
     
     print("\n" + "="*70)
     print("✨ COMPLETED!")
     print("="*70)
     
     if args.datatype == "msrvtt":
-        print(f"📄 CSV output: {args.output_csv}")
-        print(f"📄 Reference JSON: {args.output_reference}")
+        print(f"CSV output: {args.output_csv}")
+        print(f"Reference JSON: {args.output_reference}")
     elif args.datatype == "msvd":
-        print(f"📄 Pickle output: {args.output_pkl}")
-        print(f"📄 Reference JSON: {args.output_reference}")
+        print(f"Pickle output: {args.output_pkl}")
+        print(f"Reference JSON: {args.output_reference}")
 
 
 if __name__ == "__main__":

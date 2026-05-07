@@ -65,3 +65,4 @@ scripts/generate_captions.py
 datasets/MSRVTT/gen_file.py
 
 preprocess/query_generator/fqs_selector.py
+preprocess/query_generator/generate_enriched_queries.py
