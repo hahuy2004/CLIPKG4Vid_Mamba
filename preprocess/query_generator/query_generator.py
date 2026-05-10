@@ -104,7 +104,7 @@ def generate_enriched_queries(
                 input=prompt,
                 temperature=0.7,
                 top_p=0.9,
-                max_output_tokens=300
+                max_output_tokens=650
             )
             
             # Parse response
