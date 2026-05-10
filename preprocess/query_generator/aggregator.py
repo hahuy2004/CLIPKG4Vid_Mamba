@@ -160,21 +160,36 @@ class Aggregator:
         # ---------------------------------------------------------
         
         # 1. Configure weights for query variants
-        # Original query keeps full weight; enriched queries decay with index
-        # to prevent the sum of enriched weights from overwhelming the original
-        # when k is large.
         weights = [1.0]
         
         # Lựa chọn 1: Trọng số giảm dần theo cấp số nhân (exponential decay)
+        # Original query keeps full weight; enriched queries decay with index
+        # to prevent the sum of enriched weights from overwhelming the original
+        # when k is large.
         for i in range(1, k_plus_1):
+            # Trọng số giảm dần theo cấp số nhân: w_i = 0.5^(i-1)
             weights.append(0.5 / i)
+            # Hoặc có thể sử dụng cách gán trọng số giảm dần khác tùy ý
 
-        # Lựa chọn 2: Trọng số cố định cho enriched queries
+        # # Lựa chọn 2: Trọng số cố định cho enriched queries
+        # Sẽ có TH tổng trọng số enriched query lấn át original nếu k lớn
+        # Tổng trọng số enriched query có thể lớn hơn original nhưng nên giữ ở mức vừa phải 
+        # để không lấn át hoàn toàn tín hiệu từ original query (Khoảng 0.2-0.5 mỗi enriched query sẽ ổn)
         # if k_plus_1 > 1:
         #     # Chia sẻ trọng số (Shared Weight)
-        #     # Tổng sức mạnh của tất cả các câu FQS hợp lại mới bằng câu gốc (1.0).
-        #     # Nếu k=2 (thêm 2 câu), mỗi câu aug sẽ nhận 0.5. Trưởng nhóm (1.0) = 2 thành viên (0.5 + 0.5).
-        #     aug_weight = 1.0 / (k_plus_1 - 1)
+        #     # Câu gốc luôn có trọng số là 1
+        #     # Câu enriched chia đều phần còn lại của trọng số được cho
+        #     if k_plus_1 == 3:
+        #         # 2 enriched queries → mỗi câu 0.5
+        #         aug_weight = 1.0 / (k_plus_1 - 1)
+        #     elif k_plus_1 == 7:
+        #         # 6 enriched queries → mỗi câu 0.25
+        #         aug_weight = 1.5 / (k_plus_1 - 1)
+        #     elif k_plus_1 == 11:
+        #         # 10 enriched queries → mỗi câu 0.2
+        #         aug_weight = 2.0 / (k_plus_1 - 1)
+        #     else:
+        #         # Gán trọng số mong muốn cho enriched queries (ví dụ: 0.4)
             
         #     # Gán trọng số bằng nhau cho tất cả các câu từ index 1 trở đi
         #     for i in range(1, k_plus_1):

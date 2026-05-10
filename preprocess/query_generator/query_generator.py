@@ -46,19 +46,19 @@ def generate_enriched_queries(
     output_json_path,
     api_key,
     n_variations=10,
-    model="gpt-4.1-mini",
+    model="gpt-4.1",
     batch_size=1,
     sleep_time=1.0
 ):
     """
-    Generate enriched query variations using GPT-4.1-mini.
+    Generate enriched query variations using GPT-4.1.
     
     Args:
         input_captions: List of original captions or dict with video_id -> caption
         output_json_path: Path to save enriched data
         api_key: OpenAI API key
         n_variations: Number of variations to generate (default: 10)
-        model: OpenAI model to use (default: gpt-4.1-mini)
+        model: OpenAI model to use (default: gpt-4.1)
         batch_size: Process captions in batches (default: 1)
         sleep_time: Sleep between API calls to avoid rate limits
         
@@ -203,7 +203,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_json", type=str, required=True, help="Output enriched queries JSON file")
     parser.add_argument("--api_key", type=str, required=True, help="OpenAI API key")
     parser.add_argument("--n_variations", type=int, default=10, help="Number of variations per caption")
-    parser.add_argument("--model", type=str, default="gpt-4.1-mini", help="OpenAI model to use")
+    parser.add_argument("--model", type=str, default="gpt-4.1", help="OpenAI model to use")
     
     args = parser.parse_args()
     

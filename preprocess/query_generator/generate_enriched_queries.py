@@ -1,6 +1,17 @@
 """
-Standalone script for generating enriched queries using GPT-5-mini
+Standalone script for generating enriched queries using GPT-4.1
 Run this script BEFORE evaluation to prepare enriched data
+
+Output format for all datasets (unified):
+{
+  "video_id": {
+    "cap_1": {
+      "original": "original_caption",
+      "augment": ["aug_1", "aug_2", ..., "aug_n"]
+    }
+  },
+  ...
+}
 
 Usage for MSRVTT:
     python generate_enriched_queries.py \
@@ -18,6 +29,14 @@ Usage for MSVD:
         --raw_captions data/MSVD/raw-captions.pkl \
         --output_pkl data/MSVD/eval_enriched-caption-complete.pkl \
         --output_reference data/MSVD/enriched_eval_captions.json \
+        --api_key "your-openai-api-key" \
+        --n_variations 10
+
+Usage for DiDeMo:
+    python generate_enriched_queries.py \
+        --datatype didemo \
+        --data_path datasets/DiDeMo/didemo_data/test_caption.json \
+        --output_json datasets/DiDeMo/didemo_data/test_caption_enriched.json \
         --api_key "your-openai-api-key" \
         --n_variations 10
 """
@@ -247,31 +266,176 @@ def save_reference_json(enriched_data, output_json_path):
     print(f"Saved reference data to {output_json_path}")
 
 
+def load_didemo_json(json_path):
+    """
+    Load DiDeMo test data from JSON file.
+    Expected format: {"video_id_1": "original_caption_1", "video_id_2": "original_caption_2", ...}
+    
+    Returns:
+        dict: {video_id: caption_text}
+    """
+    print(f"Loading DiDeMo JSON from: {json_path}")
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    
+    print(f"Loaded {len(data)} videos from DiDeMo")
+    return data
+
+
+def save_didemo_enriched_json(enriched_data, output_json_path, n_variations=10):
+    """
+    Save enriched data to JSON in unified format.
+    Output format:
+    {
+        "video_id_1": {
+            "cap_1": {
+                "original": "original_caption",
+                "augment": ["aug_1", "aug_2", ..., "aug_n"]
+            }
+        },
+        ...
+    }
+    
+    Args:
+        enriched_data: dict from generate_enriched_queries - {video_id: [original, var1, var2, ..., var_n]}
+        output_json_path: Path to save output JSON
+        n_variations: Number of variations per caption
+    """
+    print(f"Saving enriched JSON to: {output_json_path}")
+    
+    output_data = {}
+    for video_id, captions in enriched_data.items():
+        # captions[0] = original
+        # captions[1:n_variations+1] = augmented variations
+        original = captions[0]
+        augmented = captions[1:n_variations+1]
+        
+        output_data[video_id] = {
+            "cap_1": {
+                "original": original,
+                "augment": augmented
+            }
+        }
+    
+    with open(output_json_path, 'w', encoding='utf-8') as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"Saved enriched data for {len(output_data)} videos to {output_json_path}")
+    return output_data
+
+
+def convert_msrvtt_to_unified_format(enriched_data, original_data, n_variations=10):
+    """
+    Convert MSRVTT enriched data (keyed by ret0, ret1, etc.) to unified format.
+    Groups by video_id and converts to:
+    {
+        "video_id": {
+            "cap_1": {
+                "original": "...",
+                "augment": [...]
+            }
+        }
+    }
+    
+    Args:
+        enriched_data: {key: [original, var1, ..., var_n]} where key = ret0, ret1, etc.
+        original_data: {key: {'video_id': ..., ...}}
+        n_variations: Number of variations per caption
+        
+    Returns:
+        dict: Unified format data
+    """
+    output_data = {}
+    
+    for key, captions in enriched_data.items():
+        if key not in original_data:
+            continue
+            
+        video_id = original_data[key]['video_id']
+        original = captions[0]
+        augmented = captions[1:n_variations+1]
+        
+        if video_id not in output_data:
+            output_data[video_id] = {
+                "cap_1": {
+                    "original": original,
+                    "augment": augmented
+                }
+            }
+    
+    return output_data
+
+
+def convert_msvd_to_unified_format(enriched_data, n_variations=10):
+    """
+    Convert MSVD enriched data to unified format.
+    
+    Args:
+        enriched_data: {video_id: [original, var1, ..., var_n]}
+        n_variations: Number of variations per caption
+        
+    Returns:
+        dict: Unified format data
+    """
+    output_data = {}
+    
+    for video_id, captions in enriched_data.items():
+        original = captions[0]
+        augmented = captions[1:n_variations+1]
+        
+        output_data[video_id] = {
+            "cap_1": {
+                "original": original,
+                "augment": augmented
+            }
+        }
+    
+    return output_data
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate enriched queries using GPT-5-mini",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+All datasets output in unified JSON format:
+{
+  "video_id": {
+    "cap_1": {
+      "original": "original_caption",
+      "augment": ["aug1", "aug2", ..., "augN"]
+    }
+  }
+}
+
 Examples:
-  # MSRVTT:
+  # MSRVTT (outputs CSV + unified JSON):
   python generate_enriched_queries.py --datatype msrvtt \\
     --data_path data/MSRVTT/MSRVTT_JSFUSION_test.csv \\
     --output_csv data/MSRVTT/MSRVTT_JSFUSION_test_enriched.csv \\
-    --output_reference data/MSRVTT/MSRVTT_eval_enriched_reference_data.json
+    --output_reference data/MSRVTT/MSRVTT_eval_enriched.json \\
+    --api_key "sk-..." --n_variations 10
 
-  # MSVD:
+  # MSVD (outputs PKL + unified JSON):
   python generate_enriched_queries.py --datatype msvd \\
     --data_path data/MSVD/test_list.txt \\
     --raw_captions data/MSVD/raw-captions.pkl \\
     --output_pkl data/MSVD/eval_enriched-caption-complete.pkl \\
-    --output_reference data/MSVD/enriched_eval_captions.json
+    --output_reference data/MSVD/enriched_eval_captions.json \\
+    --api_key "sk-..." --n_variations 10
+
+  # DiDeMo (outputs unified JSON):
+  python generate_enriched_queries.py --datatype didemo \\
+    --data_path datasets/DiDeMo/didemo_data/test_caption.json \\
+    --output_json datasets/DiDeMo/didemo_data/test_caption_enriched.json \\
+    --api_key "sk-..." --n_variations 10
         """
     )
     
     # Dataset type
     parser.add_argument("--datatype", type=str, required=True,
-                       choices=["msrvtt", "msvd"],
-                       help="Dataset type: msrvtt or msvd")
+                       choices=["msrvtt", "msvd", "didemo"],
+                       help="Dataset type: msrvtt, msvd, or didemo")
     
     # Input files
     parser.add_argument("--data_path", type=str, required=True,
@@ -284,6 +448,8 @@ Examples:
                        help="Output CSV path (MSRVTT only)")
     parser.add_argument("--output_pkl", type=str, default=None,
                        help="Output pickle path (MSVD only)")
+    parser.add_argument("--output_json", type=str, default=None,
+                       help="Output JSON path (DiDeMo only)")
     parser.add_argument("--output_reference", type=str, default=None,
                        help="Output reference JSON path (for debugging)")
     
@@ -293,7 +459,7 @@ Examples:
     parser.add_argument("--n_variations", type=int, default=10,
                        help="Number of variations per caption (default: 10)")
     parser.add_argument("--model", type=str, default="gpt-5-mini",
-                       choices=["gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
+                       choices=["gpt-5-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
                        help="OpenAI model to use (default: gpt-5-mini)")
     parser.add_argument("--sleep_time", type=float, default=1.0,
                        help="Sleep time between API calls in seconds (default: 1.0)")
@@ -325,6 +491,13 @@ Examples:
                 os.path.dirname(args.output_pkl),
                 'enriched_eval_captions.json'
             )
+    elif args.datatype == "didemo":
+        if args.output_json is None:
+            parser.error("--output_json is required for DiDeMo")
+        if args.output_reference is None:
+            # Default: output_json with _reference suffix
+            base_path = os.path.splitext(args.output_json)[0]
+            args.output_reference = f"{base_path}_reference.json"
     
     print("="*70)
     print("ENRICHED QUERY GENERATION")
@@ -362,6 +535,15 @@ Examples:
         
         print(f"Extracted {len(input_captions)} videos")
     
+    elif args.datatype == "didemo":
+        print("\n[DiDeMo] Loading data...")
+        original_data = load_didemo_json(args.data_path)
+        
+        # Extract captions for enrichment - video_id is key, caption is value
+        input_captions = original_data.copy()
+        
+        print(f"Extracted {len(input_captions)} captions to enrich")
+    
     # Apply max_samples limit if specified
     if args.max_samples:
         print(f"\nLimiting to first {args.max_samples} samples for testing")
@@ -392,36 +574,34 @@ Examples:
     print("="*70)
     
     if args.datatype == "msrvtt":
+        # Save CSV (backward compatibility)
         save_msrvtt_enriched_csv(enriched_data, original_data, args.output_csv, args.n_variations)
-        # save_reference_json(enriched_data, args.output_reference)
-
-        # --- BẮT ĐẦU PHẦN SỬA ĐỔI ---
-        # Tạo một dictionary mới dùng video_id làm key thay vì ret_...
-        video_id_enriched_data = {}
-        for key, captions in enriched_data.items():
-            video_id = original_data[key]['video_id']
-            
-            # Gộp các captions vào danh sách của video_id 
-            # (Dùng extend đề phòng trường hợp 1 video_id có nhiều queries ret_... khác nhau)
-            if video_id not in video_id_enriched_data:
-                video_id_enriched_data[video_id] = []
-            video_id_enriched_data[video_id].extend(captions)
-            
-        # Lưu file JSON sử dụng dictionary mới có key là video_id
-        save_reference_json(video_id_enriched_data, args.output_reference)
-        # --- KẾT THÚC PHẦN SỬA ĐỔI ---
+        
+        # Convert to unified format and save as JSON
+        unified_data = convert_msrvtt_to_unified_format(enriched_data, original_data, args.n_variations)
+        save_didemo_enriched_json(unified_data, args.output_reference, args.n_variations)
         
         print(f"\nMSRVTT outputs saved:")
         print(f"  CSV: {args.output_csv}")
-        print(f"  Reference JSON: {args.output_reference}")
+        print(f"  JSON (unified format): {args.output_reference}")
         
     elif args.datatype == "msvd":
+        # Save PKL (backward compatibility)
         save_msvd_enriched_pkl(enriched_data, original_captions_dict, args.output_pkl)
-        save_reference_json(enriched_data, args.output_reference)
+        
+        # Convert to unified format and save as JSON
+        unified_data = convert_msvd_to_unified_format(enriched_data, args.n_variations)
+        save_didemo_enriched_json(unified_data, args.output_reference, args.n_variations)
         
         print(f"\nMSVD outputs saved:")
         print(f"  Pickle: {args.output_pkl}")
-        print(f"  Reference JSON: {args.output_reference}")
+        print(f"  JSON (unified format): {args.output_reference}")
+    
+    elif args.datatype == "didemo":
+        save_didemo_enriched_json(enriched_data, args.output_json, args.n_variations)
+        
+        print(f"\nDiDeMo outputs saved:")
+        print(f"  JSON: {args.output_json}")
     
     print("\n" + "="*70)
     print("✨ COMPLETED!")
@@ -429,10 +609,12 @@ Examples:
     
     if args.datatype == "msrvtt":
         print(f"CSV output: {args.output_csv}")
-        print(f"Reference JSON: {args.output_reference}")
+        print(f"JSON output (unified format): {args.output_reference}")
     elif args.datatype == "msvd":
         print(f"Pickle output: {args.output_pkl}")
-        print(f"Reference JSON: {args.output_reference}")
+        print(f"JSON output (unified format): {args.output_reference}")
+    elif args.datatype == "didemo":
+        print(f"JSON output: {args.output_json}")
 
 
 if __name__ == "__main__":
