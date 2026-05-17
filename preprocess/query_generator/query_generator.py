@@ -19,26 +19,50 @@ from openai import OpenAI
 
 # Please output ONLY the {n} rewritten sentences, one per line, without numbering or any additional text."""
 
-PROMPT_TEMPLATE = """You are given a caption describing a visual scene.
+# ==================
+
+# MSRVTT
+# PROMPT_TEMPLATE = """You are given a caption describing a visual scene.
+
+# Your task is to generate EXACTLY {n} rewritten versions of the caption, following the constraints below:
+
+# 1. Each rewritten sentence must preserve the exact semantic meaning of the original caption.
+# 2. Do NOT introduce any new objects, actions, attributes, intentions, or contextual details that are not explicitly stated in the original caption.
+# 3. The rewriting must be strictly grounded in the visual content described by the original caption.
+# 4. Sentence structure and lexical choices should be diversified across rewritten sentences.
+# 5. The rewritten captions should vary in length and number of words.
+# 6. Each rewritten caption must be no more than 10 words longer than the original caption.
+# 7. The original caption must NOT appear in the rewritten outputs.
+# 8. No two rewritten captions may be identical.
+# 9. Do NOT use commas (,), quotation marks ("), semicolons (;), or colons (:).
+# 10. Each rewritten caption must be a single simple sentence without punctuation inside the sentence.
+# 11. Use conjunctions such as "and", "while", or "as" instead of punctuation.
+
+# The input caption is:
+# "{caption}"
+
+# Output ONLY the {n} rewritten sentences, one per line, without numbering, bullet points, or any additional explanations.
+# """
+
+# DiDeMo
+PROMPT_TEMPLATE = """You are given a caption describing a visual scene, which often consists of multiple sentences or a sequence of events.
 
 Your task is to generate EXACTLY {n} rewritten versions of the caption, following the constraints below:
 
-1. Each rewritten sentence must preserve the exact semantic meaning of the original caption.
-2. Do NOT introduce any new objects, actions, attributes, intentions, or contextual details that are not explicitly stated in the original caption.
+1. Each rewritten version must preserve the exact semantic meaning and the complete sequence of events from the original caption.
+2. Do NOT introduce any new objects, actions, attributes, intentions, or contextual details that are not explicitly stated.
 3. The rewriting must be strictly grounded in the visual content described by the original caption.
-4. Sentence structure and lexical choices should be diversified across rewritten sentences.
-5. The rewritten captions should vary in length and number of words.
-6. Each rewritten caption must be no more than 10 words longer than the original caption.
-7. The original caption must NOT appear in the rewritten outputs.
-8. No two rewritten captions may be identical.
-9. Do NOT use commas (,), quotation marks ("), semicolons (;), or colons (:).
-10. Each rewritten caption must be a single simple sentence without punctuation inside the sentence.
-11. Use conjunctions such as "and", "while", or "as" instead of punctuation.
+4. Sentence structure and lexical choices should be diversified across rewritten versions.
+5. Maintain a similar length and level of detail as the original caption. Do NOT over-summarize or drop any events.
+6. The original caption must NOT appear in the rewritten outputs.
+7. No two rewritten versions may be identical.
+8. You may use periods (.) and commas (,) to clearly separate multiple actions, but each complete rewritten version MUST be output on a single continuous line.
+9. Do NOT use quotation marks ("), semicolons (;), or colons (:).
 
 The input caption is:
 "{caption}"
 
-Output ONLY the {n} rewritten sentences, one per line, without numbering, bullet points, or any additional explanations.
+Output ONLY the {n} rewritten versions, one per line, without numbering, bullet points, or any additional explanations.
 """
 
 def generate_enriched_queries(
@@ -99,12 +123,14 @@ def generate_enriched_queries(
         try:
             prompt = PROMPT_TEMPLATE.format(n=n_variations, caption=original_caption)
             
+            # MSRVTT: 400
+            # DiDeMo: 750
             response = client.responses.create(
                 model=model,
                 input=prompt,
                 temperature=0.7,
                 top_p=0.9,
-                max_output_tokens=650
+                max_output_tokens=750
             )
             
             # Parse response

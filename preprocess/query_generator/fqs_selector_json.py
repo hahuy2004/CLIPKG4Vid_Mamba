@@ -179,8 +179,8 @@ def apply_selection_to_json_item(original, augment, k, model=None, device=None, 
     if sort_results:
         # Tạo mapping để tra cứu vị trí (index) nhanh của câu augment trong mảng gốc
         original_order = {text: idx for idx, text in enumerate(augment)}
-        # Sắp xếp mảng kết quả dựa trên vị trí gốc
-        selected_augments.sort(key=lambda x: original_order[x])
+        # Sắp xếp mảng kết quả: dùng .get(x, -1) để tránh KeyError nếu x là câu gốc (fallback do threshold)
+        selected_augments.sort(key=lambda x: original_order.get(x, -1))
 
     return selected_augments
 

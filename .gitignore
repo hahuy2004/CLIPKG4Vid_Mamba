@@ -52,17 +52,13 @@ docs/PROPOSED_METHOD_FROM_CODE.md
 /KG/analyze_kg.py
 /KG/Note_run_extract_KG.txt
 
-datasets/MSRVTT/msrvtt_data_before.zip
-datasets/MSRVTT/msrvtt_data_1.zip
-datasets/MSRVTT/msrvtt_data_2.zip
-datasets/MSRVTT/msrvtt_data_3.zip
-
-datasets/DiDeMo/didemo_data_1.zip
-datasets/DiDeMo/didemo_data_2.zip
-datasets/DiDeMo/didemo_data_3.zip
+datasets/MSRVTT/msrvtt_data_*.zip
+datasets/DiDeMo/didemo_data_*.zip
 
 scripts/generate_captions.py
 datasets/MSRVTT/gen_file.py
 
 preprocess/query_generator/fqs_selector.py
 preprocess/query_generator/generate_enriched_queries.py
+
+README_raw.md

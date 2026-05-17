@@ -1,7 +1,6 @@
 # CLIPKG4Vid: Boosting Text-Video Retrieval via Comprehensive Utilization of Frame-Level Captions
 
-The official implementation of CLIPKG4Vid — a framework that enhances text-video retrieval by leveraging frame-level captions (narration) to improve semantic understanding and retrieval accuracy. CLIPKG4Vid employs cross-modal interactions, query-aware filtering, dual-modal matching, and hard-negative loss, achieving SOTA results on MSR-VTT, MSVD, VATEX and DiDeMo.
-![framework](/docs/framework.png)
+The official implementation of CLIPKG4Vid — a framework that enhances text-video retrieval by leveraging frame-level captions (narration) to improve semantic understanding and retrieval accuracy. CLIPKG4Vid employs cross-modal interactions, query-aware filtering, dual-modal matching, and hard-negative loss, achieving good results on MSR-VTT, MSVD, DiDeMo.
 
 ## Requirements
 This project requires two environments: one for `CLIPKG4Vid`, which serves as the main framework, 
@@ -35,9 +34,9 @@ The splits can be found in the job [collaborative-experts](https://github.com/al
 Raw videos can be download from [link](https://www.cs.utexas.edu/~ml/clamp/videoDescription/)
 The splits can be found in the job [collaborative-experts](https://github.com/albanie/collaborative-experts/tree/master/misc/datasets/msvd)
 
-### For VATEX
+<!-- ### For VATEX
 
-Raw Videos and split can be download from [Vatex](https://eric-xw.github.io/vatex-website/download.html) 
+Raw Videos and split can be download from [Vatex](https://eric-xw.github.io/vatex-website/download.html)  -->
 
 ### For DiDeMo
 
@@ -70,14 +69,6 @@ Based on the extracted video frames, use LLaVa to generate captions for each fra
 python preprocess/narration/narration_generator.py --video_frames_path [your_frame_path] --video_id_list_path [your_video_id.json]
 ```
 
-### Download Pre-generated Narration Files
-
-To simplify reproduction, pre-generated narration files are available for direct download. These files include narrations for the MSR-VTT, DiDeMo, MSVD, and VATEX datasets, generated using the above process.
-
-*   **[NarVid v1.1 Release Page](https://github.com/invhun/NarVid/releases/tag/1.1)**
-
-
-
 ## How to Run 
 
 （1）Ensure that the data preparation and preprocessing are completed
@@ -94,49 +85,3 @@ or, download CLIP (ViT-B/16) weight,
 ```sh
 wget -P ./modules https://openaipublic.azureedge.net/clip/models/5806e77cd80f8b59890b7e101eabd078d9fb84e6937f9e85e4ecb61988df416f/ViT-B-16.pt
 ```
-
-（3）About the running scripts
-
-### MSRVTT
-
-```sh
-sh scripts/train_msrvtt_vit32.sh
-```
-
-```sh
-sh scripts/train_msrvtt_vit16.sh
-```
-
-### MSVD
-
-```sh
-sh scripts/train_msvd.sh
-```
-
-### VATEX
-
-```sh
-sh scripts/train_vatex.sh
-```
-
-### DiDeMo
-
-```sh
-sh scripts/train_didemo.sh
-```
-
-# Citation
-If you find NarVid helpful for your work, please cite the following paper when using our code or referring to the results.
-```bibtex
-@InProceedings{Hur_2025_CVPR,
-    author    = {Hur, Chan and Hong, Jeong-hun and Lee, Dong-hun and Kang, Dabin and Myeong, Semin and Park, Sang-hyo and Park, Hyeyoung},
-    title     = {Narrating the Video: Boosting Text-Video Retrieval via Comprehensive Utilization of Frame-Level Captions},
-    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
-    month     = {June},
-    year      = {2025},
-    pages     = {24077-24086}
-}
-```
-
-# Acknowledgments
-The implementation of NarVid relies on resources from [CLIP](https://github.com/openai/CLIP "CLIP"), [CLIP4Clip](https://github.com/ArrowLuo/CLIP4Clip "CLIP4Clip") and [Cap4Video](https://github.com/whwu95/Cap4Video "Cap4Video").
