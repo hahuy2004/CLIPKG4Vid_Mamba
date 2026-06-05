@@ -179,13 +179,15 @@ class BertOutput(nn.Module):
 class Co_attention_block(nn.Module):
     def __init__(self,num_attention_heads=6,hidden_size=512,dropout_rate=0.1):
         super(Co_attention_block, self).__init__()
+        # 1. Bi-Directional Attn & AddNorm
         self.biattention = BertBiAttention(num_attention_heads,hidden_size,dropout_rate)
-
         self.biOutput = BertBiOutput(hidden_size,dropout_rate)
 
+        # 2.1 Vision FeedForward & AddNorm
         self.v_intermediate = BertImageIntermediate(hidden_size)
         self.v_output = BertImageOutput(hidden_size,dropout_rate)
 
+        # 2.2. Text FeedForward & AddNorm
         self.t_intermediate = BertIntermediate(hidden_size)
         self.t_output = BertOutput(hidden_size,dropout_rate)
 
@@ -196,7 +198,7 @@ class Co_attention_block(nn.Module):
         text_input_tensor,
         text_attention_mask,
     ):
-
+        # 1. Bi-Directional Attn & AddNorm
         text_bi_output, vision_bi_output, co_attention_probs = self.biattention(
             vision_input_tensor,
             vision_attention_mask,
@@ -204,8 +206,12 @@ class Co_attention_block(nn.Module):
             text_attention_mask,)
         vision_attention_output, text_attention_output = self.biOutput(
             vision_bi_output, vision_input_tensor, text_bi_output, text_input_tensor)
+        
+        # 2.1 Vision FeedForward & AddNorm
         vision_intermediate_output = self.v_intermediate(vision_attention_output)
         vision_layer_output = self.v_output(vision_intermediate_output, vision_attention_output)
+
+        # 2.2. Text FeedForward & AddNorm
         text_intermediate_output = self.t_intermediate(text_attention_output)
         text_layer_output = self.t_output(text_intermediate_output, text_attention_output)
         return vision_layer_output, text_layer_output, co_attention_probs

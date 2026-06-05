@@ -162,12 +162,13 @@ class Aggregator:
         # 1. Configure weights for query variants
         weights = [1.0]
         
-        # Lựa chọn 1: Trọng số giảm dần theo cấp số nhân (exponential decay)
+        # Lựa chọn 1: Trọng số giảm dần theo điều hòa (harmonic decay)
         # Original query keeps full weight; enriched queries decay with index
         # to prevent the sum of enriched weights from overwhelming the original
         # when k is large.
         for i in range(1, k_plus_1):
-            # Trọng số giảm dần theo cấp số nhân: w_i = 0.5^(i-1)
+            # Trọng số giảm dần điều hòa: w_i = 0.5 / i
+            # i=1 → 0.500, i=2 → 0.250, i=3 → 0.167, i=4 → 0.125, ...
             weights.append(0.5 / i)
             # Hoặc có thể sử dụng cách gán trọng số giảm dần khác tùy ý
 

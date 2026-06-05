@@ -45,12 +45,18 @@
 /datasets/Vatex/vatex_data.zip
 /datasets/Vatex/vatex_data_raw.zip
 
+/datasets/split_msrvtt.py
+/datasets/split_msvd.py
+/datasets/split_didemo.py
+/datasets/split_vatex.py
+
 docs/PROPOSED_METHOD_FROM_CODE.md
 /KG/error
 /KG/benchmarks
 /KG/test_kg_builder.py
 /KG/analyze_kg.py
 /KG/Note_run_extract_KG.txt
+/KG/stanford-corenlp-4.5.4.zip
 
 datasets/MSRVTT/msrvtt_data_*.zip
 datasets/DiDeMo/didemo_data_*.zip
@@ -62,3 +68,5 @@ preprocess/query_generator/fqs_selector.py
 preprocess/query_generator/generate_enriched_queries.py
 
 README_raw.md
+preprocess/query_generator/weighted_rrf_analysis.md
+preprocess/query_generator/Reviewing Text-Video Retrieval Aggregation.md
