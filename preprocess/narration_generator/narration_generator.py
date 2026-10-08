@@ -63,9 +63,14 @@ def main():
     model_path = os.path.expanduser(model_path)
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, None, model_name)
+    model.generation_config.max_length = None
 
     # Prompt for generating narration
     questions = "Please describe this image for image-captioning task."
+    if model.config.mm_use_im_start_end:
+        questions = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + "\n" + questions
+    else:
+        questions = DEFAULT_IMAGE_TOKEN + "\n" + questions
 
     conv_mode = "llava_v1"
     conv = conv_templates[conv_mode].copy()
@@ -117,7 +122,8 @@ def main():
                     top_p=top_p,
                     num_beams=num_beams,
                     max_new_tokens=1024,
-                    use_cache=True
+                    use_cache=True,
+                    stopping_criteria=[stopping_criteria]
                 )
                 
             caption = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
